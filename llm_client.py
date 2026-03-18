@@ -123,12 +123,13 @@ def parse_json_response(text):
     return []
 
 
-def analyze_file(client, content, filepath, host_name, model):
+def analyze_file(client, content, filepath, host_name, model, kb_context=""):
     """Phase 1: Analyze a single file (or chunk) for security findings."""
     prompt = PHASE1_PROMPT_TEMPLATE.format(
         host_name=host_name,
         filepath=filepath,
         content=content,
+        kb_context=kb_context,
     )
 
     try:

@@ -1,0 +1,92 @@
+SYSTEM HARDENING CHECKLIST
+
+== Kernel and OS Security ==
+
+sysctl settings (/etc/sysctl.conf):
+- net.ipv4.ip_forward = 0 (unless router/gateway): MEDIUM if enabled unnecessarily
+- net.ipv4.conf.all.accept_redirects = 0: MEDIUM if enabled
+- net.ipv4.conf.all.send_redirects = 0: MEDIUM if enabled
+- net.ipv4.conf.all.accept_source_route = 0: MEDIUM if enabled
+- net.ipv4.conf.all.log_martians = 1: LOW if disabled (audit gap)
+- net.ipv4.icmp_echo_ignore_broadcasts = 1: LOW (smurf protection)
+- net.ipv4.tcp_syncookies = 1: MEDIUM if disabled (SYN flood)
+- kernel.randomize_va_space = 2: HIGH if 0 (ASLR disabled)
+- kernel.exec-shield = 1: MEDIUM if disabled (older kernels)
+- fs.suid_dumpable = 0: MEDIUM if enabled (core dumps may contain secrets)
+
+== File System Security ==
+
+Critical file permissions:
+- /etc/passwd: 644 (world-readable is OK)
+- /etc/shadow: 640 or 600 (CRITICAL if world-readable)
+- /etc/gshadow: 640 or 600
+- /etc/group: 644
+- /etc/ssh/sshd_config: 600
+- /etc/crontab: 600 or 644
+- /var/log/*: should not be world-writable
+
+SUID/SGID binaries:
+- Unexpected SUID binaries: HIGH (potential privilege escalation)
+- Known dangerous SUID: nmap, vim, find, python, perl, ruby, bash
+  - Any of these with SUID = CRITICAL
+- Custom SUID binaries: HIGH (review carefully)
+- GTFOBins reference for privilege escalation via SUID
+
+World-writable files/directories:
+- /tmp should have sticky bit (1777): MEDIUM if not
+- World-writable files outside /tmp: HIGH
+- World-writable directories without sticky bit: HIGH
+
+Mount options:
+- /tmp should be separate partition with noexec,nosuid,nodev
+- /var/tmp: noexec,nosuid,nodev
+- /dev/shm: noexec,nosuid,nodev
+- /home: nosuid,nodev
+- Missing noexec on tmp: MEDIUM
+
+== Service Management ==
+
+Unnecessary services (should be disabled):
+- avahi-daemon (unless needed for mDNS)
+- cups (unless print server)
+- rpcbind (unless NFS needed)
+- nfs-server (unless required)
+- vsftpd/proftpd (prefer SFTP)
+- telnet-server (CRITICAL if running)
+- rsh/rlogin (CRITICAL if running)
+- xinetd services (review each)
+
+Service hardening:
+- Services should run as non-root dedicated users
+- Use systemd sandboxing (PrivateTmp, ProtectSystem, NoNewPrivileges)
+- Limit capabilities with CapabilityBoundingSet
+- Use seccomp filters where possible
+
+== Logging and Auditing ==
+
+auditd:
+- Should be installed and running
+- Missing auditd: MEDIUM (no syscall auditing)
+- Key audit rules:
+  - Monitor /etc/passwd, /etc/shadow changes
+  - Monitor /etc/sudoers changes
+  - Monitor SSH key directory changes
+  - Log all privilege escalation (execve with euid=0)
+  - Log failed authentication attempts
+
+Log files:
+- /var/log/auth.log (or /var/log/secure): authentication events
+- /var/log/syslog: general system events
+- /var/log/kern.log: kernel events
+- Missing or empty critical logs: MEDIUM (may indicate tampering)
+- Logs not rotated: LOW (disk space risk)
+- No remote log forwarding: LOW-MEDIUM (no backup if compromised)
+
+== Cron Security ==
+
+- Cron jobs running as root: review each carefully
+- Cron scripts with insecure permissions: HIGH
+- Cron scripts referencing writable paths: HIGH (path injection)
+- Missing /etc/cron.allow: LOW (restricts who can use cron)
+- /etc/cron.deny empty or missing: LOW
+- World-readable crontab files: MEDIUM

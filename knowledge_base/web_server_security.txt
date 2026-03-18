@@ -1,0 +1,63 @@
+WEB SERVER SECURITY ANALYSIS
+
+== Apache Configuration ==
+
+Critical checks:
+- ServerTokens: Should be "Prod" (minimal info disclosure)
+  - ServerTokens Full: MEDIUM (reveals version, OS, modules)
+- ServerSignature: Should be "Off"
+- Directory listing (Options +Indexes): MEDIUM severity
+  - Exposes file structure to attackers
+- .htaccess files with sensitive info: varies
+- AllowOverride All on sensitive directories: MEDIUM
+- mod_status/mod_info exposed: MEDIUM (information leak)
+  - /server-status, /server-info accessible: HIGH if public
+- DocumentRoot permissions: should be 755 for dirs, 644 for files
+- Running as root: CRITICAL (should run as www-data/apache)
+- Missing security headers: see headers section below
+
+== Nginx Configuration ==
+
+Critical checks:
+- server_tokens: Should be "off"
+- autoindex on: MEDIUM (directory listing)
+- Missing rate limiting: MEDIUM for login pages
+- Proxy headers not set (X-Real-IP, X-Forwarded-For): may affect logging
+- SSL configuration: see TLS section in network_security
+- Large client_max_body_size: LOW (DoS potential)
+- Missing security headers
+
+== Security Headers ==
+
+Missing headers and their severity:
+- Strict-Transport-Security (HSTS): MEDIUM
+  - Should include max-age >= 31536000
+  - includeSubDomains recommended
+- X-Content-Type-Options: nosniff: LOW
+- X-Frame-Options: DENY or SAMEORIGIN: MEDIUM (clickjacking)
+- Content-Security-Policy: MEDIUM-HIGH depending on application
+- X-XSS-Protection: deprecated but LOW if missing
+- Referrer-Policy: LOW
+- Permissions-Policy: LOW
+- Cache-Control for sensitive pages: MEDIUM
+
+== Web Application Indicators ==
+
+Common issues found in configs:
+- Debug mode enabled in production: HIGH
+  - Django DEBUG=True, Flask debug=True
+  - Exposes stack traces, settings, secrets
+- Default credentials in config: CRITICAL
+- Database connection strings with cleartext passwords: HIGH
+- API keys or secrets in configuration files: HIGH-CRITICAL
+- CORS with Access-Control-Allow-Origin: *: MEDIUM-HIGH
+- Cookie settings: missing Secure, HttpOnly, SameSite: MEDIUM
+- Session timeout too long (> 30 min for sensitive apps): LOW-MEDIUM
+
+== File Upload Considerations ==
+
+Dangerous configurations:
+- Upload directory with execute permissions: CRITICAL
+- No file type validation configured: HIGH
+- Large upload size limits without validation: MEDIUM
+- Upload directory inside web root: HIGH

@@ -12,6 +12,8 @@ A Python CLI tool that analyzes security evidence folders using a local LLM (via
 - Markdown and HTML report output
 - Binary file detection and graceful skipping
 - Works entirely offline with a local LLM
+- Custom security-tuned model via Ollama Modelfile with few-shot examples
+- RAG knowledge base for enriching analysis with security reference documents
 
 ## Requirements
 
@@ -32,6 +34,21 @@ ollama pull llama3.1:8b
 pip install -r requirements.txt
 ```
 
+## Quick Start (Custom Model + Knowledge Base)
+
+For the best results, build the custom security-tuned model and knowledge base before analyzing:
+
+```bash
+# 1. Build the custom model (one-time, requires llama3.1:8b)
+python analyzer.py build-model
+
+# 2. Build the knowledge base index (re-run after adding docs)
+python analyzer.py build-kb
+
+# 3. Analyze with both features enabled
+python analyzer.py /evidence/host1 --model lea-security --kb --verbose
+```
+
 ## Usage
 
 ```bash
@@ -50,6 +67,9 @@ python analyzer.py /evidence/host1 --format html --output report.html
 # Use a different model
 python analyzer.py /evidence/host1 --model mistral:7b
 
+# Use the custom security model with knowledge base
+python analyzer.py /evidence/host1 --model lea-security --kb
+
 # Verbose output (shows progress)
 python analyzer.py /evidence/host1 --verbose
 ```
@@ -64,7 +84,17 @@ python analyzer.py /evidence/host1 --verbose
 | `--format, -f` | `markdown` | Output format: `markdown` or `html` |
 | `--ollama-host` | `http://localhost:11434` | Ollama API URL |
 | `--chunk-size` | `50000` | Max chars per LLM chunk |
+| `--kb` | off | Enable knowledge base RAG enrichment |
+| `--kb-dir` | `./knowledge_base` | Custom knowledge base directory |
 | `--verbose, -v` | off | Show analysis progress |
+
+### Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `build-model` | Build the custom `lea-security` Ollama model from Modelfile |
+| `build-kb` | Build or rebuild the knowledge base index |
+| `analyze` | Analyze evidence folders (default when no subcommand) |
 
 ## How It Works
 
@@ -83,6 +113,48 @@ Each finding includes:
 - **Evidence file path** referencing the source file
 - **Host** identification
 
+## Custom Security Model (Modelfile)
+
+The `Modelfile` creates a security-tuned version of llama3.1:8b with:
+- Detailed security analyst system prompt covering CIS, STIG, NIST, OWASP
+- Few-shot examples of real findings (SSH, nmap, passwd analysis)
+- Lower temperature (0.2) for consistent, deterministic output
+- Full 128k context window enabled
+
+```bash
+# Build it (one-time)
+python analyzer.py build-model
+
+# Use it
+python analyzer.py /evidence/host1 --model lea-security
+```
+
+## Knowledge Base (RAG)
+
+Add your own security reference documents to the `knowledge_base/` directory to enrich analysis. The tool uses keyword-based retrieval to inject relevant reference context into each file's analysis prompt.
+
+**Included reference documents:**
+- SSH hardening (CIS benchmarks)
+- Linux user/authentication security
+- Network security (port analysis, TLS, firewalls)
+- Web server security (Apache, Nginx, headers)
+- System hardening (kernel, filesystem, services)
+
+**Add your own:**
+```bash
+# Add any .txt files — CIS benchmarks, your runbooks, CVE lists, etc.
+cp my_security_guide.txt knowledge_base/
+cp cis_benchmark_notes.txt knowledge_base/
+
+# Rebuild the index
+python analyzer.py build-kb
+
+# Analyze with KB enabled
+python analyzer.py /evidence/host1 --kb --verbose
+```
+
+No heavy dependencies — uses a simple inverted keyword index (no chromadb/faiss needed). Security terms like CVE IDs, config directives, and service names are highly discriminative, so keyword matching works well.
+
 ## Recommended Models
 
 | Model | Context | RAM | Notes |
@@ -90,6 +162,7 @@ Each finding includes:
 | `llama3.1:8b` | 128k | ~5GB | Default. Large context, strong reasoning |
 | `mistral:7b` | 8k | ~4GB | Lightweight, use `--chunk-size 6000` |
 | `qwen3:8b` | 32k | ~5GB | Strong structured output |
+| `lea-security` | 128k | ~5GB | Custom-tuned from llama3.1:8b with security prompts |
 
 ## Evidence Folder Structure
 
