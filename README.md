@@ -1,19 +1,39 @@
-# LocalEvidenceAnalyzer
+<p align="center">
+  <h1 align="center">LocalEvidenceAnalyzer</h1>
+  <p align="center">
+    <strong>Offline security evidence analysis powered by local LLMs</strong>
+  </p>
+  <p align="center">
+    <a href="#features">Features</a> &bull;
+    <a href="#installation">Installation</a> &bull;
+    <a href="#quick-start">Quick Start</a> &bull;
+    <a href="#usage">Usage</a> &bull;
+    <a href="#recommended-models">Models</a> &bull;
+    <a href="#license">License</a>
+  </p>
+  <p align="center">
+    <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT">
+    <img src="https://img.shields.io/badge/python-3.8%2B-brightgreen.svg" alt="Python 3.8+">
+    <img src="https://img.shields.io/badge/ollama-local%20LLM-orange.svg" alt="Ollama">
+  </p>
+</p>
 
-A Python CLI tool that analyzes security evidence folders using a local LLM (via Ollama) and generates structured security assessment reports with CVSSv3-scored findings.
+---
+
+A Python CLI tool that analyzes security evidence folders using a local LLM (via [Ollama](https://ollama.ai)) and generates structured security assessment reports with CVSSv3-scored findings. Everything runs locally — your evidence never leaves your machine.
 
 ## Features
 
-- Recursive evidence folder scanning (configs, logs, scan outputs, text files)
-- Multi-host support — analyze multiple hosts in a single run
-- Two-phase LLM analysis: per-file analysis + cross-file deduplication/consolidation
-- CVSSv3 scoring with vector strings for each finding
-- Evidence file references for traceability
-- Markdown and HTML report output
-- Binary file detection and graceful skipping
-- Works entirely offline with a local LLM
-- Custom security-tuned model via Ollama Modelfile with few-shot examples
-- RAG knowledge base for enriching analysis with security reference documents
+- **Recursive evidence scanning** — configs, logs, scan outputs, text files
+- **Multi-host support** — analyze multiple hosts in a single run
+- **Two-phase LLM analysis** — per-file analysis + cross-file deduplication and consolidation
+- **CVSSv3 scoring** — vector strings and base scores for every finding
+- **Evidence traceability** — each finding references its source file
+- **Markdown & HTML reports** — professional output ready for clients
+- **Custom security model** — Ollama Modelfile with CIS/STIG/NIST/OWASP tuning and few-shot examples
+- **RAG knowledge base** — enrich analysis with your own security reference documents
+- **Graceful interruption** — press Ctrl+C to generate a partial report or quit
+- **Fully offline** — no data leaves your machine
 
 ## Requirements
 
@@ -24,61 +44,81 @@ A Python CLI tool that analyzes security evidence folders using a local LLM (via
 ## Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/d3vn0mi/LocalEvidenceAnalyzer.git
+cd LocalEvidenceAnalyzer
+
+# Create a virtual environment (recommended)
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install Python dependencies
+pip install -r requirements.txt
+
 # Install Ollama (if not already installed)
 curl -fsSL https://ollama.ai/install.sh | sh
 
 # Pull the default model
 ollama pull llama3.1:8b
-
-# Install Python dependencies
-pip install -r requirements.txt
 ```
 
-## Quick Start (Custom Model + Knowledge Base)
-
-For the best results, build the custom security-tuned model and knowledge base before analyzing:
+## Quick Start
 
 ```bash
-# 1. Build the custom model (one-time, requires llama3.1:8b)
+# Analyze an evidence folder
+python analyzer.py analyze /evidence/host1 --verbose
+
+# For best results, build the custom security model first (one-time)
 python analyzer.py build-model
 
-# 2. Build the knowledge base index (re-run after adding docs)
+# Build the knowledge base index (re-run after adding reference docs)
 python analyzer.py build-kb
 
-# 3. Analyze with both features enabled
-python analyzer.py /evidence/host1 --model lea-security --kb --verbose
+# Analyze with custom model + knowledge base
+python analyzer.py analyze /evidence/host1 --model lea-security --kb --verbose
 ```
 
 ## Usage
 
 ```bash
-# Analyze a single host
-python analyzer.py /path/to/evidence/host1
+# Single host
+python analyzer.py analyze /path/to/evidence/host1
 
-# Analyze multiple hosts
-python analyzer.py /evidence/host1 /evidence/host2 /evidence/host3
+# Multiple hosts
+python analyzer.py analyze /evidence/host1 /evidence/host2 /evidence/host3
 
 # Save report to file
-python analyzer.py /evidence/host1 --output report.md
+python analyzer.py analyze /evidence/host1 --output report.md
 
 # Generate HTML report
-python analyzer.py /evidence/host1 --format html --output report.html
+python analyzer.py analyze /evidence/host1 --format html --output report.html
 
 # Use a different model
-python analyzer.py /evidence/host1 --model mistral:7b
+python analyzer.py analyze /evidence/host1 --model qwen2.5:32b
 
 # Use the custom security model with knowledge base
-python analyzer.py /evidence/host1 --model lea-security --kb
+python analyzer.py analyze /evidence/host1 --model lea-security --kb
 
-# Verbose output (shows progress)
+# Shorthand (omit "analyze" subcommand)
 python analyzer.py /evidence/host1 --verbose
 ```
 
-## CLI Options
+### Graceful Interruption
+
+Press **Ctrl+C** during analysis to get a prompt:
+
+```
+Interrupted! What would you like to do?
+  [g] Generate report with findings collected so far
+  [q] Quit without generating a report
+Choice [g/q]:
+```
+
+### CLI Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `folders` | (required) | One or more evidence folders |
+| `folders` | *(required)* | One or more evidence folders |
 | `--model` | `llama3.1:8b` | Ollama model name |
 | `--output, -o` | stdout | Save report to file |
 | `--format, -f` | `markdown` | Output format: `markdown` or `html` |
@@ -92,48 +132,52 @@ python analyzer.py /evidence/host1 --verbose
 
 | Command | Description |
 |---------|-------------|
+| `analyze` | Analyze evidence folders *(default)* |
 | `build-model` | Build the custom `lea-security` Ollama model from Modelfile |
 | `build-kb` | Build or rebuild the knowledge base index |
-| `analyze` | Analyze evidence folders (default when no subcommand) |
 
 ## How It Works
 
+```
+Evidence Folders ──> File Walker ──> Phase 1: Per-File Analysis ──> Phase 2: Consolidation ──> Report
+                                          (LLM + RAG)              (Dedup + CVSS ranking)
+```
+
 1. **File Walking** — Recursively scans each host folder, reads text files, skips binaries
-2. **Phase 1 (Per-File Analysis)** — Each file is sent to the LLM individually for focused security analysis. Large files are chunked on line boundaries.
-3. **Phase 2 (Consolidation)** — All raw findings are sent to the LLM for deduplication, CVSS score refinement, and severity ranking
+2. **Phase 1 — Per-File Analysis** — Each file is sent to the LLM for focused security analysis; large files are chunked on line boundaries; optional RAG context is injected from the knowledge base
+3. **Phase 2 — Consolidation** — All raw findings are deduplicated, CVSS scores are refined, and findings are ranked by severity
 4. **Report Generation** — Findings are rendered as a Markdown or HTML report with executive summary, per-finding details, and evidence references
 
-## Report Structure
+### Report Structure
 
 Each finding includes:
+
 - **Title** and detailed description
 - **Technical impact** assessment
-- **Mitigation** steps
+- **Mitigation** steps with specific remediation actions
 - **CVSSv3 score and vector** for standardized criticality rating
 - **Evidence file path** referencing the source file
 - **Host** identification
 
-## Custom Security Model (Modelfile)
+## Custom Security Model
 
-The `Modelfile` creates a security-tuned version of llama3.1:8b with:
-- Detailed security analyst system prompt covering CIS, STIG, NIST, OWASP
+The included `Modelfile` creates a security-tuned version of llama3.1:8b with:
+
+- Detailed security analyst system prompt covering CIS, STIG, NIST, OWASP frameworks
 - Few-shot examples of real findings (SSH, nmap, passwd analysis)
 - Lower temperature (0.2) for consistent, deterministic output
-- Full 128k context window enabled
+- 128K context window
 
 ```bash
-# Build it (one-time)
 python analyzer.py build-model
-
-# Use it
-python analyzer.py /evidence/host1 --model lea-security
+python analyzer.py analyze /evidence/host1 --model lea-security
 ```
 
 ## Knowledge Base (RAG)
 
-Add your own security reference documents to the `knowledge_base/` directory to enrich analysis. The tool uses keyword-based retrieval to inject relevant reference context into each file's analysis prompt.
+Add security reference documents to `knowledge_base/` to enrich analysis with domain-specific context. Uses a lightweight keyword-based retrieval system — no heavy vector DB dependencies.
 
-**Included reference documents:**
+**Included references:**
 - SSH hardening (CIS benchmarks)
 - Linux user/authentication security
 - Network security (port analysis, TLS, firewalls)
@@ -142,7 +186,7 @@ Add your own security reference documents to the `knowledge_base/` directory to 
 
 **Add your own:**
 ```bash
-# Add any .txt files — CIS benchmarks, your runbooks, CVE lists, etc.
+# Add .txt files — CIS benchmarks, runbooks, CVE lists, etc.
 cp my_security_guide.txt knowledge_base/
 cp cis_benchmark_notes.txt knowledge_base/
 
@@ -150,19 +194,18 @@ cp cis_benchmark_notes.txt knowledge_base/
 python analyzer.py build-kb
 
 # Analyze with KB enabled
-python analyzer.py /evidence/host1 --kb --verbose
+python analyzer.py analyze /evidence/host1 --kb --verbose
 ```
-
-No heavy dependencies — uses a simple inverted keyword index (no chromadb/faiss needed). Security terms like CVE IDs, config directives, and service names are highly discriminative, so keyword matching works well.
 
 ## Recommended Models
 
-| Model | Context | RAM | Notes |
-|-------|---------|-----|-------|
-| `llama3.1:8b` | 128k | ~5GB | Default. Large context, strong reasoning |
-| `mistral:7b` | 8k | ~4GB | Lightweight, use `--chunk-size 6000` |
-| `qwen3:8b` | 32k | ~5GB | Strong structured output |
-| `lea-security` | 128k | ~5GB | Custom-tuned from llama3.1:8b with security prompts |
+| Model | Size | RAM | Speed | Notes |
+|-------|------|-----|-------|-------|
+| `llama3.1:8b` | 4.9 GB | ~8 GB | Fast | Default — good general performance |
+| `lea-security` | 4.9 GB | ~8 GB | Fast | Custom-tuned with security prompts |
+| `qwen2.5:14b` | ~9 GB | ~12 GB | Moderate | Better structured JSON output |
+| `qwen2.5:32b` | ~20 GB | ~24 GB | Slower | Best quality — recommended for 32GB+ RAM |
+| `mistral-small:24b` | ~15 GB | ~18 GB | Moderate | Strong reasoning |
 
 ## Evidence Folder Structure
 
@@ -181,3 +224,15 @@ evidence/
 │   ├── apache_config.conf
 │   └── access.log
 ```
+
+## Contributing
+
+Contributions are welcome! Feel free to open issues or submit pull requests.
+
+## Author
+
+**d3vn0mi** — [github.com/d3vn0mi](https://github.com/d3vn0mi)
+
+## License
+
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
