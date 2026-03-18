@@ -1,0 +1,440 @@
+# Ubuntu / Debian Hardening
+# Framework: CIS Ubuntu Linux Benchmark v2.x, CIS Debian Linux Benchmark
+# Scope: Ubuntu/Debian-specific security configuration audit and hardening
+
+## APPARMOR
+
+### Issue: AppArmor disabled or profiles in complain mode
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 1.6.1.1, 1.6.1.2, 1.6.1.3
+Affected: Ubuntu 18.04+, Debian 10+
+
+What to look for:
+  aa-status
+  # Check output:
+  # "apparmor module is not loaded" = CRITICAL (AppArmor disabled)
+  # "0 profiles in enforce mode" = HIGH (no enforcement)
+  # Profiles in complain mode = MEDIUM (logs but does not block)
+  # Unconfined processes: check for critical services without profiles
+
+  # Systemd check:
+  systemctl status apparmor
+  # inactive (dead) = not running
+
+  # Kernel parameter check:
+  cat /proc/cmdline | grep apparmor
+  # apparmor=0 means disabled via boot parameter
+
+Why it matters:
+  AppArmor provides mandatory access control on Ubuntu/Debian similar to SELinux on RHEL. Without it, compromised services have unrestricted filesystem and network access.
+
+Remediation:
+  # Install if missing:
+  apt install apparmor apparmor-utils apparmor-profiles apparmor-profiles-extra
+  # Enable and start:
+  systemctl enable --now apparmor
+  # Set profiles to enforce mode:
+  aa-enforce /etc/apparmor.d/*
+  # Check and fix individual profiles:
+  aa-status
+  # For profiles in complain mode:
+  aa-enforce /etc/apparmor.d/usr.sbin.nginx
+  aa-enforce /etc/apparmor.d/usr.sbin.apache2
+  # If disabled via kernel parameter, remove apparmor=0 from /etc/default/grub:
+  # GRUB_CMDLINE_LINUX should not contain apparmor=0
+  update-grub
+
+### Issue: Unconfined processes for network-facing services
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 1.6.1.4
+Affected: Ubuntu, Debian
+
+What to look for:
+  aa-unconfined
+  # Lists processes listening on network ports without AppArmor profiles
+  # Critical if: apache2, nginx, mysqld, sshd, named, postfix are unconfined
+
+Remediation:
+  # Install extra profiles:
+  apt install apparmor-profiles apparmor-profiles-extra
+  # Create custom profile for unconfined service:
+  aa-genprof /usr/sbin/nginx
+  # Or use audit mode first:
+  aa-complain /etc/apparmor.d/usr.sbin.nginx
+  # Monitor logs, then enforce:
+  aa-logprof
+  aa-enforce /etc/apparmor.d/usr.sbin.nginx
+
+## APT PACKAGE SECURITY
+
+### Issue: APT sources with GPG verification disabled
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+CIS: 1.2.1
+Affected: Ubuntu, Debian
+
+What to look for:
+  # /etc/apt/sources.list and /etc/apt/sources.list.d/*.list:
+  deb [trusted=yes] http://repo.example.com/debian stable main   # DANGEROUS
+  deb [allow-insecure=yes] http://...                             # DANGEROUS
+  # HTTP repos without GPG:
+  deb http://ppa.launchpad.net/...                                # HTTP not HTTPS
+
+  # Check for unsigned packages:
+  apt-get update 2>&1 | grep "NO_PUBKEY\|InRelease is not signed"
+
+Why it matters:
+  Unsigned or untrusted repositories can deliver tampered packages — backdoored binaries, modified libraries, or malicious updates.
+
+Remediation:
+  # Remove trusted=yes from repo entries
+  # Convert HTTP to HTTPS where possible
+  # Import missing GPG keys:
+  apt-key adv --keyserver keyserver.ubuntu.com --recv-keys <KEY_ID>
+  # Or for newer Ubuntu/Debian:
+  wget -qO- https://repo.example.com/gpg.key | gpg --dearmor > /etc/apt/trusted.gpg.d/example.gpg
+  # Verify all repos are signed:
+  apt-get update
+
+### Issue: Unattended security updates not configured
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 1.9
+Affected: Ubuntu, Debian
+
+What to look for:
+  dpkg -l unattended-upgrades            # Not installed
+  cat /etc/apt/apt.conf.d/20auto-upgrades
+  # APT::Periodic::Unattended-Upgrade "0";  # Disabled
+  # or missing file entirely
+
+  # Check if security repo is in unattended-upgrades:
+  cat /etc/apt/apt.conf.d/50unattended-upgrades
+  # Unattended-Upgrade::Allowed-Origins missing security entries
+
+Remediation:
+  # Install:
+  apt install unattended-upgrades
+  # Enable:
+  dpkg-reconfigure -plow unattended-upgrades
+  # /etc/apt/apt.conf.d/20auto-upgrades:
+  APT::Periodic::Update-Package-Lists "1";
+  APT::Periodic::Unattended-Upgrade "1";
+  APT::Periodic::Download-Upgradeable-Packages "1";
+  APT::Periodic::AutocleanInterval "7";
+
+## UFW FIREWALL
+
+### Issue: UFW not installed or inactive
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 3.5.1.1
+Affected: Ubuntu, Debian
+
+What to look for:
+  dpkg -l ufw                    # Check if installed
+  ufw status                     # Status: inactive
+  ufw status verbose             # Default: deny (incoming), allow (outgoing)
+
+Remediation:
+  apt install ufw
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow ssh
+  ufw enable
+  systemctl enable ufw
+
+### Issue: UFW allows too many services
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 3.5.1.4
+Affected: Ubuntu, Debian
+
+What to look for:
+  ufw status numbered
+  # Check for overly permissive rules:
+  # [ 1] Anywhere  ALLOW IN  Anywhere   # Allows everything!
+  # Or services that should be restricted:
+  # [ 2] 3306/tcp  ALLOW IN  Anywhere   # MySQL from anywhere
+  # [ 3] 5432/tcp  ALLOW IN  Anywhere   # PostgreSQL from anywhere
+
+Remediation:
+  # Delete overly permissive rules:
+  ufw delete <rule-number>
+  # Add source-restricted rules:
+  ufw allow from 10.0.1.0/24 to any port 3306 proto tcp
+  ufw allow from 10.0.1.0/24 to any port 5432 proto tcp
+
+### Issue: UFW IPv6 not enabled
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 3.5.1.2
+Affected: Ubuntu, Debian
+
+What to look for:
+  grep "IPV6=" /etc/default/ufw
+  # IPV6=no    # IPv6 traffic bypasses firewall
+
+Remediation:
+  # /etc/default/ufw:
+  # Before: IPV6=no
+  # After:  IPV6=yes
+  ufw reload
+
+## KERNEL HARDENING
+
+### Issue: Missing sysctl security parameters
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 3.3.x
+Affected: Ubuntu, Debian
+
+What to look for:
+  # Check current values:
+  sysctl net.ipv4.ip_forward                      # Should be 0 (unless router)
+  sysctl net.ipv4.conf.all.accept_redirects        # Should be 0
+  sysctl net.ipv4.conf.all.send_redirects          # Should be 0
+  sysctl net.ipv4.conf.all.accept_source_route     # Should be 0
+  sysctl net.ipv4.conf.all.log_martians            # Should be 1
+  sysctl net.ipv4.tcp_syncookies                   # Should be 1
+  sysctl kernel.randomize_va_space                 # Should be 2 (full ASLR)
+  sysctl fs.suid_dumpable                          # Should be 0
+  sysctl kernel.yama.ptrace_scope                  # Should be 1 or higher
+
+  # Ubuntu/Debian-specific: check /etc/sysctl.d/ and /etc/sysctl.conf
+  # Note: /etc/sysctl.d/*.conf files override /etc/sysctl.conf
+
+Remediation:
+  # Create /etc/sysctl.d/99-security.conf:
+  net.ipv4.ip_forward = 0
+  net.ipv4.conf.all.accept_redirects = 0
+  net.ipv4.conf.default.accept_redirects = 0
+  net.ipv4.conf.all.send_redirects = 0
+  net.ipv4.conf.default.send_redirects = 0
+  net.ipv4.conf.all.accept_source_route = 0
+  net.ipv4.conf.all.log_martians = 1
+  net.ipv4.tcp_syncookies = 1
+  kernel.randomize_va_space = 2
+  fs.suid_dumpable = 0
+  kernel.yama.ptrace_scope = 1
+  net.ipv6.conf.all.accept_redirects = 0
+  # Apply:
+  sysctl --system
+
+## SERVICE MANAGEMENT
+
+### Issue: Unnecessary services enabled
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 2.1.x, 2.2.x
+Affected: Ubuntu, Debian
+
+What to look for:
+  systemctl list-unit-files --state=enabled
+  # Services to audit/disable if not needed:
+  # avahi-daemon.service    — mDNS (network discovery, attack surface)
+  # cups.service            — printing (often unnecessary on servers)
+  # isc-dhcp-server.service — DHCP (only on DHCP servers)
+  # rpcbind.service         — NFS/NIS (legacy, large attack surface)
+  # rsync.service           — rsync daemon
+  # snapd.service           — Ubuntu snap (consider if needed)
+  # multipathd.service      — Multipath (only for SAN storage)
+
+  # Check for legacy inetd/xinetd:
+  dpkg -l xinetd inetutils-inetd
+  ls /etc/inetd.conf /etc/xinetd.d/
+
+Remediation:
+  # Disable unnecessary services:
+  systemctl disable --now avahi-daemon.service
+  systemctl disable --now cups.service
+  systemctl disable --now rpcbind.service
+  systemctl mask rpcbind.service
+  # Remove xinetd if present:
+  apt purge xinetd inetutils-inetd
+
+## DEBIAN-SPECIFIC CHECKS
+
+### Issue: Security repository not enabled
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 1.2.1
+Affected: Debian
+
+What to look for:
+  # /etc/apt/sources.list should contain security repo:
+  grep -i security /etc/apt/sources.list
+  # Missing: deb http://security.debian.org/debian-security <codename>-security main
+  # Debian 11 (bullseye):
+  # deb http://security.debian.org/debian-security bullseye-security main
+  # Debian 12 (bookworm):
+  # deb http://security.debian.org/debian-security bookworm-security main
+
+Remediation:
+  # Add security repo (Debian 12 bookworm):
+  echo "deb http://security.debian.org/debian-security bookworm-security main contrib" >> /etc/apt/sources.list
+  apt update
+
+### Issue: File integrity not checked with debsums
+Severity: MEDIUM
+CVSS: 4.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N)
+Affected: Debian, Ubuntu
+
+What to look for:
+  dpkg -l debsums            # Not installed
+  # Run integrity check:
+  debsums -s                 # Silent mode, shows only errors
+  debsums -c                 # Changed files
+  # Suspicious output: modified binaries
+  # /usr/bin/sudo    FAILED
+  # /usr/sbin/sshd   FAILED
+
+Remediation:
+  apt install debsums
+  # Check all installed packages:
+  debsums -s 2>&1 | tee /var/log/debsums-check.log
+  # Reinstall packages with modified files:
+  apt install --reinstall <package-name>
+  # Schedule regular checks:
+  echo "0 3 * * * /usr/bin/debsums -s 2>&1 | mail -s 'debsums $(hostname)' admin@example.com" >> /var/spool/cron/crontabs/root
+
+## UBUNTU-SPECIFIC CHECKS
+
+### Issue: Snap packages with classic confinement
+Severity: LOW
+CVSS: 3.3 (AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N)
+Affected: Ubuntu 16.04+
+
+What to look for:
+  snap list
+  # Check confinement column:
+  # Name      Version  Confinement
+  # code      1.85     classic       # Full system access
+  # Snaps with "classic" have no sandboxing — same as traditional packages
+  # "strict" = sandboxed (preferred)
+  # "devmode" = developer mode, no security (AVOID in production)
+
+Remediation:
+  # Prefer strict-confined snaps or traditional apt packages
+  # Remove devmode snaps:
+  snap remove <devmode-snap>
+  # Audit classic snaps — ensure they are necessary
+
+### Issue: Ubuntu Pro / ESM not enabled for EOL releases
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: Ubuntu
+
+What to look for:
+  # Check Ubuntu version:
+  lsb_release -a
+  cat /etc/os-release
+  # EOL versions without ESM:
+  # Ubuntu 16.04 LTS — Standard support ended April 2021
+  # Ubuntu 18.04 LTS — Standard support ended June 2023
+  # Ubuntu 20.04 LTS — Standard support ends April 2025
+  # Check ESM status:
+  pro security-status        # Ubuntu 20.04+
+  ua status                  # Older
+
+Remediation:
+  # Attach Ubuntu Pro (free for up to 5 machines):
+  pro attach <token>
+  # Enable ESM:
+  pro enable esm-infra
+  pro enable esm-apps
+
+## FILESYSTEM MOUNT OPTIONS
+
+### Issue: Missing security mount options on /tmp, /var/tmp, /dev/shm
+Severity: MEDIUM
+CVSS: 5.3 (AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N)
+CIS: 1.1.2, 1.1.3, 1.1.4
+Affected: Ubuntu, Debian
+
+What to look for:
+  # /etc/fstab entries:
+  mount | grep -E "/tmp|/var/tmp|/dev/shm"
+  # Missing noexec, nosuid, nodev:
+  /dev/sda2  /tmp     ext4  defaults       0 2   # Missing security options
+  # /dev/shm often missing restrictions:
+  tmpfs  /dev/shm  tmpfs  defaults         0 0   # Missing noexec,nosuid,nodev
+
+Remediation:
+  # /etc/fstab — add security mount options:
+  # Before:
+  /dev/sda2  /tmp      ext4  defaults                0 2
+  # After:
+  /dev/sda2  /tmp      ext4  defaults,noexec,nosuid,nodev  0 2
+  tmpfs      /dev/shm  tmpfs defaults,noexec,nosuid,nodev  0 0
+  # Bind mount /var/tmp to /tmp:
+  /tmp       /var/tmp  none  bind                          0 0
+  # Remount without reboot:
+  mount -o remount /tmp
+  mount -o remount /dev/shm
+
+## PAM CONFIGURATION
+
+### Issue: PAM password quality not configured
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+CIS: 5.4.1
+Affected: Ubuntu, Debian
+
+What to look for:
+  # Check pam_pwquality or pam_cracklib:
+  grep pam_pwquality /etc/pam.d/common-password
+  grep pam_cracklib /etc/pam.d/common-password
+  # If neither present — no password complexity enforcement
+  # Check /etc/security/pwquality.conf:
+  minlen = 8                # Too low (should be 14+)
+  # Missing: minclass, dcredit, ucredit, lcredit, ocredit
+
+Remediation:
+  # Install pam_pwquality:
+  apt install libpam-pwquality
+  # Ubuntu/Debian — use pam-auth-update:
+  pam-auth-update --enable pwquality
+  # /etc/security/pwquality.conf:
+  minlen = 14
+  minclass = 3
+  dcredit = -1
+  ucredit = -1
+  lcredit = -1
+  ocredit = -1
+  maxrepeat = 3
+  maxclassrepeat = 4
+  dictcheck = 1
+
+### Issue: Account lockout not configured (pam_faillock)
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+CIS: 5.4.2
+Affected: Ubuntu 22.04+, Debian 12+
+
+What to look for:
+  grep pam_faillock /etc/pam.d/common-auth
+  grep pam_tally2 /etc/pam.d/common-auth
+  # If neither present — no account lockout after failed login attempts
+
+Remediation:
+  # Ubuntu 22.04+ / Debian 12+ — use pam_faillock:
+  # /etc/pam.d/common-auth — add before pam_unix:
+  auth  required  pam_faillock.so preauth silent audit deny=5 unlock_time=900
+  auth  [default=die]  pam_faillock.so authfail audit deny=5 unlock_time=900
+  # /etc/pam.d/common-account — add:
+  account  required  pam_faillock.so
+  # /etc/security/faillock.conf:
+  deny = 5
+  unlock_time = 900
+  fail_interval = 900
+  audit
+  silent
+
+  # Older Ubuntu/Debian — use pam_tally2:
+  # /etc/pam.d/common-auth:
+  auth required pam_tally2.so deny=5 unlock_time=900 onerr=fail
+  # /etc/pam.d/common-account:
+  account required pam_tally2.so

@@ -1,0 +1,374 @@
+# LDAP Security — OpenLDAP, 389 Directory Server, SSSD
+# Framework: CIS Benchmark, NIST SP 800-118
+# Scope: LDAP directory service configuration audit and hardening
+
+## AUTHENTICATION AND BINDING
+
+### Issue: Anonymous bind enabled
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # OpenLDAP slapd.conf or cn=config:
+  # Test: ldapsearch -x -H ldap://host -b "dc=example,dc=com"
+  # If results return without -D (bind DN), anonymous bind is enabled
+
+  # OpenLDAP olc config (cn=config):
+  olcDisallows:          # Missing "bind_anon" means anonymous allowed
+  # Should contain: olcDisallows: bind_anon
+
+  # 389 Directory Server:
+  nsslapd-allow-anonymous-access: on     # VULNERABLE
+  # Or: nsslapd-allow-anonymous-access: rootdse  # Only root DSE (safer)
+
+Why it matters:
+  Anonymous bind allows unauthenticated users to enumerate the entire directory — usernames, email addresses, group memberships, organizational structure.
+
+Remediation:
+  # OpenLDAP — disable anonymous bind:
+  # cn=config method:
+  ldapmodify -Y EXTERNAL -H ldapi:///
+  dn: cn=config
+  changetype: modify
+  add: olcDisallows
+  olcDisallows: bind_anon
+
+  # slapd.conf method:
+  disallow bind_anon
+
+  # 389 Directory Server:
+  dsconf instance_name config replace nsslapd-allow-anonymous-access=off
+  # Or via ldapmodify:
+  dn: cn=config
+  changetype: modify
+  replace: nsslapd-allow-anonymous-access
+  nsslapd-allow-anonymous-access: off
+
+### Issue: Simple bind without TLS (cleartext passwords)
+Severity: CRITICAL
+CVSS: 8.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # LDAP client configs using ldap:// instead of ldaps://:
+  # /etc/ldap.conf, /etc/openldap/ldap.conf, /etc/ldap/ldap.conf:
+  URI ldap://ldap.example.com           # Cleartext!
+  # Should be:
+  URI ldaps://ldap.example.com          # TLS on port 636
+  # Or with STARTTLS:
+  URI ldap://ldap.example.com
+  TLS_REQCERT demand
+
+  # SSSD configuration /etc/sssd/sssd.conf:
+  ldap_uri = ldap://ldap.example.com    # Cleartext!
+  ldap_id_use_start_tls = False         # No STARTTLS
+
+  # 389 DS check:
+  nsslapd-security: off                 # TLS disabled
+
+Why it matters:
+  LDAP simple bind transmits passwords in cleartext. Any network sniffer can capture credentials including service accounts and user passwords.
+
+Remediation:
+  # OpenLDAP — enable LDAPS:
+  # Generate/install TLS certificates, then in cn=config:
+  ldapmodify -Y EXTERNAL -H ldapi:///
+  dn: cn=config
+  changetype: modify
+  replace: olcTLSCACertificateFile
+  olcTLSCACertificateFile: /etc/ssl/certs/ca.pem
+  -
+  replace: olcTLSCertificateFile
+  olcTLSCertificateFile: /etc/ssl/certs/ldap.pem
+  -
+  replace: olcTLSCertificateKeyFile
+  olcTLSCertificateKeyFile: /etc/ssl/private/ldap.key
+
+  # 389 Directory Server:
+  dsconf instance_name security enable
+  dsconf instance_name security set --tls-protocol-min TLS1.2
+  dsconf instance_name security certificate add --file /etc/ssl/certs/ldap.pem --name "Server-Cert"
+
+  # SSSD — enforce TLS:
+  # /etc/sssd/sssd.conf:
+  ldap_uri = ldaps://ldap.example.com
+  ldap_id_use_start_tls = True
+  ldap_tls_reqcert = demand
+  ldap_tls_cacert = /etc/ssl/certs/ca-certificates.crt
+
+### Issue: Default or weak rootDN/Directory Manager password
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # OpenLDAP slapd.conf:
+  rootdn "cn=admin,dc=example,dc=com"
+  rootpw secret                          # Plaintext password!
+  rootpw {SSHA}...                       # Hashed — verify strength
+  # Check if rootpw is using weak hash:
+  rootpw {MD5}...                        # Weak
+  rootpw {SHA}...                        # Weak
+  rootpw {CRYPT}...                      # Depends on algorithm
+
+  # 389 DS — Directory Manager password set during install
+  # Check hash scheme in dse.ldif:
+  nsslapd-rootpw: {PBKDF2_SHA256}...    # Good
+  nsslapd-rootpw: {SSHA}...             # Acceptable
+  nsslapd-rootpw: {SHA}...              # Weak
+  nsslapd-rootpw: {cleartext}...        # CRITICAL
+
+Remediation:
+  # OpenLDAP — set strong hashed password:
+  slappasswd -s '<strong-password>' -h {SSHA}
+  # Update slapd.conf:
+  rootpw {SSHA}<hash-output>
+
+  # 389 DS — change Directory Manager password:
+  dsconf instance_name directory_manager password_change
+
+## TLS CONFIGURATION
+
+### Issue: Weak TLS protocol versions or cipher suites
+Severity: HIGH
+CVSS: 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # OpenLDAP cn=config:
+  olcTLSProtocolMin: 0        # Allows SSLv3 and all TLS versions
+  olcTLSCipherSuite: ALL      # Allows weak ciphers
+  # Missing olcTLSProtocolMin means any version accepted
+
+  # 389 Directory Server:
+  nsslapd-minssf: 0           # No minimum security strength
+  sslVersionMin: SSL3         # SSLv3 enabled
+  nsSSL3Ciphers: +all         # All ciphers including weak ones
+
+Remediation:
+  # OpenLDAP:
+  ldapmodify -Y EXTERNAL -H ldapi:///
+  dn: cn=config
+  changetype: modify
+  replace: olcTLSProtocolMin
+  olcTLSProtocolMin: 3.3
+  -
+  replace: olcTLSCipherSuite
+  olcTLSCipherSuite: ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+
+  # 389 Directory Server:
+  dsconf instance_name security set --tls-protocol-min TLS1.2
+  dsconf instance_name security ciphers set -- +TLS_AES_256_GCM_SHA384,+TLS_AES_128_GCM_SHA256,-SSL_CK_RC4_128_WITH_MD5,-TLS_RSA_WITH_AES_128_CBC_SHA
+
+### Issue: Self-signed or expired TLS certificate
+Severity: MEDIUM
+CVSS: 5.9 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # Check certificate:
+  openssl s_client -connect ldap.example.com:636 -showcerts
+  # Look for: self-signed certificate, expired, CN mismatch
+  # Client configs disabling certificate verification:
+  TLS_REQCERT never           # DANGEROUS — disables validation
+  TLS_REQCERT allow           # Warns but accepts invalid certs
+
+  # SSSD:
+  ldap_tls_reqcert = never    # DANGEROUS
+
+Remediation:
+  # Use CA-signed certificates
+  # Client config:
+  TLS_REQCERT demand          # Require valid certificate
+  TLS_CACERT /etc/ssl/certs/ca-certificates.crt
+
+## ACCESS CONTROL
+
+### Issue: Overly permissive ACLs allowing read access to sensitive attributes
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: OpenLDAP
+
+What to look for:
+  # OpenLDAP ACLs in slapd.conf or cn=config:
+  access to * by * read                    # EVERYONE can read EVERYTHING
+  access to attrs=userPassword by * read   # Password hashes readable
+  # Missing ACL for userPassword means default allows read
+
+  # Proper ACL should restrict userPassword:
+  # access to attrs=userPassword
+  #   by self write
+  #   by anonymous auth
+  #   by * none
+
+Why it matters:
+  Readable password hashes allow offline cracking. Unrestricted directory read exposes organizational structure, email addresses, and group memberships.
+
+Remediation:
+  # OpenLDAP — proper ACL ordering (first match wins):
+  access to attrs=userPassword,shadowLastChange
+    by self write
+    by anonymous auth
+    by dn="cn=admin,dc=example,dc=com" write
+    by * none
+
+  access to dn.base="" by * read
+
+  access to *
+    by self write
+    by dn="cn=admin,dc=example,dc=com" write
+    by users read
+    by * none
+
+### Issue: 389 DS ACI allowing broad access
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: 389 Directory Server
+
+What to look for:
+  # Overly permissive ACIs:
+  (targetattr = "*")(version 3.0; acl "Allow all"; allow (all) userdn = "ldap:///anyone";)
+  # Or:
+  (targetattr = "userPassword")(version 3.0; acl "Password read"; allow (read,search) userdn = "ldap:///all";)
+
+Remediation:
+  # Remove overly permissive ACI:
+  dsconf instance_name aci delete "dc=example,dc=com" "Allow all"
+  # Add restrictive ACI:
+  dsconf instance_name aci create "dc=example,dc=com" \
+    '(targetattr = "userPassword")(version 3.0; acl "Password self-modify only"; allow (write) userdn = "ldap:///self";)'
+
+## PASSWORD POLICY
+
+### Issue: No password policy overlay/plugin configured
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # OpenLDAP — check for ppolicy overlay:
+  # cn=config: missing olcOverlay=ppolicy
+  # slapd.conf: missing "overlay ppolicy"
+
+  # 389 DS — check password policy:
+  dsconf instance_name pwpolicy get
+  # passwordMinLength: 0          # No minimum length
+  # passwordLockout: off          # No lockout after failures
+  # passwordStorageScheme: CLEAR  # Cleartext storage!
+
+Remediation:
+  # OpenLDAP — enable ppolicy overlay:
+  ldapmodify -Y EXTERNAL -H ldapi:///
+  dn: olcOverlay=ppolicy,olcDatabase={1}mdb,cn=config
+  objectClass: olcOverlayConfig
+  objectClass: olcPPolicyConfig
+  olcOverlay: ppolicy
+  olcPPolicyDefault: cn=default,ou=policies,dc=example,dc=com
+
+  # Create password policy entry:
+  dn: cn=default,ou=policies,dc=example,dc=com
+  objectClass: pwdPolicy
+  objectClass: device
+  cn: default
+  pwdMinLength: 14
+  pwdMaxFailure: 5
+  pwdLockout: TRUE
+  pwdLockoutDuration: 300
+  pwdMaxAge: 7776000
+  pwdAttribute: userPassword
+
+  # 389 DS:
+  dsconf instance_name pwpolicy set --pwdminlength 14 --pwdlockout on --pwdmaxfailure 5 --pwdlockoutduration 300 --pwdstoragescheme PBKDF2_SHA256
+
+### Issue: Weak password storage scheme
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # Check stored password hashes:
+  # {CLEARTEXT} — CRITICAL: plaintext passwords
+  # {MD5} — CRITICAL: trivially crackable
+  # {SHA} — HIGH: no salt, rainbow tables
+  # {SMD5} — HIGH: salted MD5, weak
+  # {SSHA} — MEDIUM: salted SHA-1, acceptable but not ideal
+  # {SSHA256} — Good
+  # {SSHA512} — Good
+  # {PBKDF2} — Best
+  # {PBKDF2_SHA256} — Best (389 DS)
+
+  # OpenLDAP check default:
+  olcPasswordHash: {SSHA}              # Default, acceptable
+  # 389 DS:
+  passwordStorageScheme: CLEAR         # CRITICAL
+  passwordStorageScheme: DES           # CRITICAL
+  passwordStorageScheme: MD5           # CRITICAL
+
+Remediation:
+  # OpenLDAP — set strong hash:
+  ldapmodify -Y EXTERNAL -H ldapi:///
+  dn: cn=config
+  changetype: modify
+  replace: olcPasswordHash
+  olcPasswordHash: {SSHA512}
+
+  # 389 DS:
+  dsconf instance_name pwpolicy set --pwdstoragescheme PBKDF2_SHA256
+  # Force password rehash on next login by setting pwdMustChange
+
+## REPLICATION SECURITY
+
+### Issue: Replication over cleartext or with weak credentials
+Severity: HIGH
+CVSS: 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # OpenLDAP syncrepl config:
+  olcSyncRepl: rid=001 provider=ldap://replica.example.com   # Cleartext!
+    bindmethod=simple
+    credentials=replication_password                           # Plaintext in config
+  # Should use ldaps:// and starttls=critical
+
+  # 389 DS replication:
+  nsDS5ReplicaTransportInfo: LDAP      # Cleartext
+  nsDS5ReplicaBindDN: cn=replication manager,cn=config
+  nsDS5ReplicaCredentials: {cleartext}  # Exposed credentials
+
+Remediation:
+  # OpenLDAP — use LDAPS for replication:
+  olcSyncRepl: rid=001 provider=ldaps://replica.example.com
+    bindmethod=simple
+    credentials=<strong-password>
+    starttls=critical
+    tls_reqcert=demand
+
+  # 389 DS — enable TLS for replication:
+  dsconf instance_name replication set --repl-transport-info TLS
+
+## LOG FORENSICS
+
+### Issue: LDAP brute force indicators
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: OpenLDAP, 389 Directory Server
+
+What to look for:
+  # OpenLDAP slapd log (syslog):
+  conn=1000 op=0 BIND dn="uid=admin,dc=example,dc=com" method=128
+  conn=1000 op=0 RESULT tag=97 err=49 text=      # err=49 = invalid credentials
+  # Multiple err=49 from same source = brute force
+
+  # 389 DS access log (/var/log/dirsrv/slapd-instance/access):
+  [timestamp] conn=1 op=0 BIND dn="uid=admin,dc=example,dc=com" method=128 version=3
+  [timestamp] conn=1 op=0 RESULT err=49 tag=97    # Invalid credentials
+  # err=49 repeated = brute force attempt
+  # err=32 = no such object (user enumeration attempt)
+
+  # Account lockout events:
+  err=19 text="Account locked"         # OpenLDAP ppolicy lockout
+  "Account inactivated"                # 389 DS account lockout
+
+Why it matters:
+  Repeated bind failures indicate credential stuffing or brute force attacks. Successful bind after many failures indicates compromise.

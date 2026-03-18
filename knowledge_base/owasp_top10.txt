@@ -1,0 +1,472 @@
+# OWASP Top 10 (2021) — Web Application Security
+# Framework: OWASP Top 10:2021, CWE mappings
+# Scope: Web application configuration issues, log-based attack indicators, server-side misconfigs
+
+## A01 BROKEN ACCESS CONTROL
+
+### Issue: CORS misconfiguration allowing any origin
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CWE: CWE-346
+Affected: All web servers
+
+What to look for:
+  # Apache httpd.conf / .htaccess:
+  Header set Access-Control-Allow-Origin "*"
+  Header set Access-Control-Allow-Credentials "true"
+  # Nginx:
+  add_header Access-Control-Allow-Origin *;
+  # Application configs (Django settings.py):
+  CORS_ALLOW_ALL_ORIGINS = True
+  CORS_ORIGIN_ALLOW_ALL = True
+  # Node.js (Express):
+  cors({ origin: '*', credentials: true })
+
+Why it matters:
+  Wildcard CORS with credentials allows any website to make authenticated cross-origin requests, enabling data theft.
+
+Remediation:
+  # Apache — restrict to specific origins:
+  Header set Access-Control-Allow-Origin "https://app.example.com"
+  # Nginx:
+  add_header Access-Control-Allow-Origin "https://app.example.com";
+  # Django:
+  CORS_ALLOWED_ORIGINS = ["https://app.example.com"]
+  # Never use * with credentials: true
+
+### Issue: Directory traversal patterns in access logs
+Severity: CRITICAL
+CVSS: 9.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+CWE: CWE-22
+Affected: All web servers
+
+What to look for:
+  # In Apache/Nginx access logs:
+  GET /..%2f..%2f..%2fetc/passwd
+  GET /../../etc/shadow
+  GET /static/../../../etc/passwd
+  GET /download?file=../../../etc/shadow
+  GET /include.php?page=../../../../etc/passwd
+  # URL-encoded variants: %2e%2e%2f, %252e%252e%252f, ..%c0%af
+
+Why it matters:
+  Successful directory traversal exposes sensitive system files. Presence in logs indicates active attack.
+
+### Issue: Missing authentication on admin endpoints
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+CWE: CWE-306
+Affected: All web applications
+
+What to look for:
+  # Accessible without authentication:
+  /admin/, /administrator/, /wp-admin/, /phpmyadmin/
+  /api/admin/, /management/, /console/, /debug/
+  /actuator/, /actuator/env, /actuator/health
+  # Spring Boot actuators exposed:
+  management.endpoints.web.exposure.include=*
+  # Django:
+  DEBUG = True  # Exposes debug toolbar
+
+## A02 CRYPTOGRAPHIC FAILURES
+
+### Issue: Cleartext protocols in service configurations
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CWE: CWE-319
+Affected: All
+
+What to look for:
+  # Web server not redirecting HTTP to HTTPS:
+  # Apache — no redirect rule for port 80
+  # Nginx — server block on port 80 without return 301 https://
+  # FTP without TLS:
+  vsftpd.conf: ssl_enable=NO
+  # SMTP without STARTTLS:
+  postfix main.cf: smtpd_tls_security_level = none
+  # LDAP without TLS: ldap://host:389 (not ldaps://host:636)
+  # Redis without TLS: bind 0.0.0.0 (no tls-port)
+
+Remediation:
+  # Nginx — force HTTPS redirect:
+  server {
+    listen 80;
+    return 301 https://$host$request_uri;
+  }
+  # Apache:
+  <VirtualHost *:80>
+    Redirect permanent / https://example.com/
+  </VirtualHost>
+  # vsftpd — enable TLS:
+  ssl_enable=YES
+  force_local_logins_ssl=YES
+  force_local_data_ssl=YES
+
+### Issue: Hardcoded secrets and API keys in configuration files
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CWE: CWE-798
+Affected: All
+
+What to look for:
+  # Common patterns:
+  password = "plaintext_password"
+  api_key = "AKIA..."                 # AWS access key
+  secret_key = "wJalr..."            # AWS secret key
+  DB_PASSWORD=cleartext
+  DATABASE_URL=postgres://user:password@host/db
+  DJANGO_SECRET_KEY = 'hardcoded-secret'
+  JWT_SECRET = 'my-secret-key'
+  SMTP_PASSWORD = 'password123'
+  # .env files committed to repo or accessible via web:
+  /.env, /config/.env, /app/.env
+
+Why it matters:
+  Exposed credentials allow direct unauthorized access to databases, APIs, and cloud services.
+
+Remediation:
+  # Use environment variables, vault, or encrypted config:
+  # Django: SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+  # Node.js: process.env.DB_PASSWORD
+  # Use: AWS Secrets Manager, HashiCorp Vault, or ansible-vault
+  # Rotate any exposed credentials immediately
+
+### Issue: Weak TLS configuration on web server
+Severity: HIGH
+CVSS: 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
+CWE: CWE-326
+Affected: All web servers
+
+What to look for:
+  # Nginx:
+  ssl_protocols TLSv1 TLSv1.1 TLSv1.2;    # TLS 1.0/1.1 are deprecated
+  ssl_ciphers ALL:!aNULL;                    # Allows weak ciphers
+  # Apache:
+  SSLProtocol all -SSLv3                     # Allows TLS 1.0/1.1
+  SSLCipherSuite ALL:!aNULL:!MD5
+
+Remediation:
+  # Nginx:
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;
+  ssl_prefer_server_ciphers on;
+  # Apache:
+  SSLProtocol -all +TLSv1.2 +TLSv1.3
+  SSLCipherSuite ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+
+## A03 INJECTION
+
+### Issue: SQL injection indicators in web access logs
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+CWE: CWE-89
+Affected: All web applications
+
+What to look for:
+  # In Apache/Nginx access logs — URL-encoded SQL payloads:
+  union+select, UNION%20SELECT, union%20all%20select
+  ' or 1=1, %27%20or%201%3D1
+  ' or ''=', %27+or+%27%27%3D%27
+  ; DROP TABLE, %3B%20DROP%20TABLE
+  SLEEP(5), BENCHMARK(10000000,SHA1('test'))
+  information_schema, table_name, column_name
+  LOAD_FILE, INTO OUTFILE, INTO DUMPFILE
+  # Blind SQLi timing indicators:
+  WAITFOR DELAY, pg_sleep, DBMS_LOCK.SLEEP
+  # sqlmap user-agent:
+  User-Agent: sqlmap/
+
+Why it matters:
+  SQL injection can lead to full database compromise, data exfiltration, and potentially OS-level command execution.
+
+### Issue: Command injection patterns in logs
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+CWE: CWE-78
+Affected: All web applications
+
+What to look for:
+  # URL-encoded command separators:
+  %3B (;), %7C (|), %60 (backtick), %24%28 ($()
+  # Common payloads in logs:
+  ;id, ;whoami, ;cat /etc/passwd
+  |id, |cat /etc/shadow
+  $(id), `whoami`
+  ;wget http://, ;curl http://
+  ;nc -e /bin/bash, ;bash -i >& /dev/tcp/
+  ;ping -c 10, ;nslookup
+
+### Issue: LDAP injection patterns
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CWE: CWE-90
+Affected: Applications using LDAP authentication
+
+What to look for:
+  # In application logs or web access logs:
+  *)(&, *)(|, )(cn=*), )(uid=*
+  # LDAP filter injection:
+  username=*)(objectClass=*
+  username=admin)(&)
+
+## A04 INSECURE DESIGN
+
+### Issue: Default credentials in deployed applications
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+CWE: CWE-1188
+Affected: All
+
+What to look for:
+  # Common default credentials in configs:
+  admin/admin, admin/password, root/root, test/test
+  tomcat/tomcat, manager/manager
+  # Tomcat tomcat-users.xml:
+  <user username="admin" password="admin" roles="manager-gui"/>
+  # Jenkins: no authentication configured
+  # Grafana: admin/admin
+  # Kibana: elastic/changeme
+
+### Issue: Missing rate limiting on authentication endpoints
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+CWE: CWE-307
+Affected: All web applications
+
+What to look for:
+  # Nginx — no limit_req on login paths:
+  location /login { proxy_pass ...; }   # No rate limit
+  location /api/auth { proxy_pass ...; }
+  # Apache — no mod_evasive or mod_ratelimit
+  # Application — no account lockout after failed attempts
+
+Remediation:
+  # Nginx rate limiting:
+  limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+  location /login {
+    limit_req zone=login burst=3 nodelay;
+    proxy_pass http://backend;
+  }
+  # Apache mod_ratelimit:
+  <Location /login>
+    SetOutputFilter RATE_LIMIT
+    SetEnv rate-limit 10
+  </Location>
+
+## A05 SECURITY MISCONFIGURATION
+
+### Issue: Debug mode enabled in production
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CWE: CWE-489
+Affected: All web frameworks
+
+What to look for:
+  # Django settings.py:
+  DEBUG = True
+  # Flask:
+  app.run(debug=True)
+  FLASK_DEBUG=1
+  # Rails:
+  config.consider_all_requests_local = true
+  # Node.js Express:
+  NODE_ENV=development
+  # Spring Boot application.properties:
+  management.endpoints.web.exposure.include=*
+  # PHP php.ini:
+  display_errors = On
+  error_reporting = E_ALL
+
+Why it matters:
+  Debug mode exposes stack traces, source code paths, environment variables, database queries, and internal application state to attackers.
+
+Remediation:
+  # Django: DEBUG = False, ALLOWED_HOSTS = ['example.com']
+  # Flask: app.run(debug=False), FLASK_ENV=production
+  # PHP: display_errors = Off, log_errors = On
+  # Spring Boot: management.endpoints.web.exposure.include=health,info
+
+### Issue: Directory listing enabled
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+CWE: CWE-548
+Affected: All web servers
+
+What to look for:
+  # Apache:
+  Options +Indexes     # Enables directory listing
+  # or missing Options -Indexes
+  # Nginx:
+  autoindex on;
+
+Remediation:
+  # Apache:
+  Options -Indexes
+  # Nginx:
+  autoindex off;   # default, ensure not overridden
+
+### Issue: Missing security headers
+Severity: MEDIUM
+CVSS: 5.4 (AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N)
+CWE: CWE-693
+Affected: All web servers
+
+What to look for:
+  # Check response headers — missing any of:
+  Strict-Transport-Security       # HSTS
+  X-Content-Type-Options          # nosniff
+  X-Frame-Options                 # DENY or SAMEORIGIN
+  Content-Security-Policy         # CSP
+  Referrer-Policy                 # strict-origin-when-cross-origin
+  Permissions-Policy              # camera=(), microphone=()
+  Cache-Control                   # no-store for sensitive pages
+
+Remediation:
+  # Nginx — add to server block:
+  add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header X-Frame-Options "DENY" always;
+  add_header Content-Security-Policy "default-src 'self'; script-src 'self'" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+
+  # Apache:
+  Header always set Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Content-Security-Policy "default-src 'self'"
+
+### Issue: Server version information disclosure
+Severity: LOW
+CVSS: 3.7 (AV:N/AC:H/PR:N/UI:N/S:U/C:L/I:N/A:N)
+CWE: CWE-200
+Affected: All web servers
+
+What to look for:
+  # Apache:
+  ServerTokens Full              # Exposes "Apache/2.4.52 (Ubuntu)"
+  ServerSignature On             # Version in error pages
+  # Nginx:
+  server_tokens on;              # Exposes "nginx/1.24.0"
+  # PHP:
+  expose_php = On                # X-Powered-By: PHP/8.1.0
+
+Remediation:
+  # Apache:
+  ServerTokens Prod
+  ServerSignature Off
+  # Nginx:
+  server_tokens off;
+  # PHP php.ini:
+  expose_php = Off
+
+## A06 VULNERABLE AND OUTDATED COMPONENTS
+
+### Issue: Known-vulnerable software versions detected
+Severity: HIGH
+CVSS: Variable (depends on CVE)
+CWE: CWE-1104
+Affected: All
+
+What to look for:
+  # Server headers revealing versions:
+  Server: Apache/2.4.49          # CVE-2021-41773 path traversal
+  Server: Apache/2.4.50          # CVE-2021-42013 path traversal bypass
+  Server: nginx/1.16.0           # Multiple CVEs
+  X-Powered-By: PHP/7.4.0       # PHP 7.4 EOL
+  X-Powered-By: PHP/5.6.0       # PHP 5.x critically outdated
+  # Application versions:
+  WordPress 4.x, 5.x            # Check against WPScan DB
+  jQuery/1.x, jQuery/2.x        # Multiple XSS CVEs
+  # OpenSSL versions in TLS handshake or logs
+
+## A07 IDENTIFICATION AND AUTHENTICATION FAILURES
+
+### Issue: Weak session configuration
+Severity: MEDIUM
+CVSS: 5.4 (AV:N/AC:L/PR:N/UI:R/S:U/C:L/I:L/A:N)
+CWE: CWE-384
+Affected: All web applications
+
+What to look for:
+  # PHP php.ini:
+  session.cookie_secure = 0        # Cookie sent over HTTP
+  session.cookie_httponly = 0       # Accessible via JavaScript
+  session.cookie_samesite = ""     # No SameSite attribute
+  session.gc_maxlifetime = 86400   # 24hr session, too long
+  session.use_strict_mode = 0      # Accepts uninitialized session IDs
+  # Django settings.py:
+  SESSION_COOKIE_SECURE = False
+  SESSION_COOKIE_HTTPONLY = False
+  CSRF_COOKIE_SECURE = False
+
+Remediation:
+  # PHP php.ini:
+  session.cookie_secure = 1
+  session.cookie_httponly = 1
+  session.cookie_samesite = "Lax"
+  session.gc_maxlifetime = 1800    # 30 minutes
+  session.use_strict_mode = 1
+  # Django:
+  SESSION_COOKIE_SECURE = True
+  SESSION_COOKIE_HTTPONLY = True
+  CSRF_COOKIE_SECURE = True
+  SESSION_COOKIE_AGE = 1800
+
+## A09 SECURITY LOGGING AND MONITORING FAILURES
+
+### Issue: Insufficient access logging configuration
+Severity: MEDIUM
+CVSS: 4.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N)
+CWE: CWE-778
+Affected: All web servers
+
+What to look for:
+  # Apache — no CustomLog or missing log format fields:
+  LogFormat "%h %l %u %t \"%r\" %>s %b" common  # Missing user-agent, referrer
+  # Nginx — basic log format missing fields:
+  access_log /var/log/nginx/access.log;  # Using default format
+  # Application — no audit logging for auth events
+  # Log files not forwarded to SIEM/central logging
+
+Remediation:
+  # Apache — comprehensive log format:
+  LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" %{X-Forwarded-For}i %D" combined_plus
+  CustomLog /var/log/apache2/access.log combined_plus
+  # Nginx:
+  log_format extended '$remote_addr - $remote_user [$time_local] '
+    '"$request" $status $body_bytes_sent '
+    '"$http_referer" "$http_user_agent" '
+    '$request_time $upstream_response_time '
+    '$http_x_forwarded_for';
+  access_log /var/log/nginx/access.log extended;
+
+## A10 SERVER-SIDE REQUEST FORGERY (SSRF)
+
+### Issue: Unrestricted outbound requests from web application
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CWE: CWE-918
+Affected: All web applications
+
+What to look for:
+  # In access/application logs — requests to internal/metadata endpoints:
+  GET /fetch?url=http://169.254.169.254/latest/meta-data/
+  GET /proxy?target=http://localhost:8080/admin
+  GET /load?url=http://10.0.0.1:6379/
+  GET /webhook?callback=http://internal-service/
+  # Cloud metadata endpoints:
+  169.254.169.254 (AWS/GCP)
+  169.254.169.254:80/metadata (Azure)
+  100.100.100.200 (Alibaba Cloud)
+
+Why it matters:
+  SSRF allows attackers to access internal services, cloud metadata (IAM credentials), and pivot through the application server to the internal network.
+
+Remediation:
+  # Application-level: validate and restrict outbound URLs
+  # Block private IP ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16
+  # iptables — block outbound to metadata endpoint:
+  iptables -A OUTPUT -d 169.254.169.254 -j DROP
+  # AWS — use IMDSv2 (requires token):
+  aws ec2 modify-instance-metadata-options --instance-id i-xxx --http-tokens required

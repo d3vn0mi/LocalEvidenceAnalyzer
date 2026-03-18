@@ -1,0 +1,331 @@
+# RHEL / CentOS / Rocky Linux / AlmaLinux Hardening
+# Framework: CIS Red Hat Enterprise Linux Benchmark v3.x
+# Scope: RHEL-specific security configuration audit and hardening
+
+## SELINUX
+
+### Issue: SELinux disabled or in permissive mode
+Severity: CRITICAL
+CVSS: 8.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+CIS: 1.6.1.1, 1.6.1.2
+Affected: RHEL 7/8/9, CentOS 7, Rocky 8/9, AlmaLinux 8/9
+
+What to look for:
+  # Check current status:
+  getenforce                                   # Enforcing|Permissive|Disabled
+  sestatus                                     # Detailed status
+  # Persistent config:
+  /etc/selinux/config:
+  SELINUX=disabled                             # CRITICAL — no MAC enforcement
+  SELINUX=permissive                           # HIGH — logs but does not enforce
+  # Should be:
+  SELINUX=enforcing
+  SELINUXTYPE=targeted
+
+Why it matters:
+  SELinux provides mandatory access control that contains compromised services. Disabled SELinux means a web server exploit gives unrestricted filesystem access.
+
+Remediation:
+  # Enable SELinux:
+  # /etc/selinux/config:
+  SELINUX=enforcing
+  SELINUXTYPE=targeted
+  # If currently disabled, set to permissive first, reboot, check for denials:
+  setenforce 0    # Temporary permissive
+  # Fix denials, then:
+  setenforce 1    # Enforce
+  # Relabel filesystem if switching from disabled:
+  touch /.autorelabel
+  reboot
+
+### Issue: SELinux denials indicating misconfigurations or attacks
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+Affected: RHEL 7/8/9
+
+What to look for:
+  # Audit log:
+  /var/log/audit/audit.log:
+  type=AVC msg=audit(...): avc:  denied  { read } for pid=...
+    comm="httpd" name="shadow" dev="sda1"
+    scontext=system_u:system_r:httpd_t:s0
+    tcontext=system_u:object_r:shadow_t:s0
+  # Web server trying to read /etc/shadow = suspicious
+  # Use audit2why to analyze:
+  ausearch -m AVC -ts recent | audit2why
+
+Why it matters:
+  AVC denials for unusual operations (web server reading shadow, writing to /tmp/shells) may indicate exploitation attempts that SELinux blocked.
+
+Remediation:
+  # Investigate before creating policy exceptions:
+  ausearch -m AVC -ts recent | audit2allow -R
+  # Only set booleans if legitimate:
+  setsebool -P httpd_can_network_connect on    # If web server needs outbound
+  # Never run: setenforce 0 as a "fix"
+  # Use semanage to adjust file contexts if needed:
+  semanage fcontext -a -t httpd_sys_content_t "/srv/www(/.*)?"
+  restorecon -Rv /srv/www
+
+## SUBSCRIPTION AND PATCHING
+
+### Issue: System not registered or repos misconfigured
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+CIS: 1.2.1
+Affected: RHEL 7/8/9
+
+What to look for:
+  # Check subscription:
+  subscription-manager status      # Not registered = no security updates
+  subscription-manager list --consumed
+  # Check repos:
+  dnf repolist                     # RHEL 8/9
+  yum repolist                     # RHEL 7
+  # Third-party repos without GPG:
+  /etc/yum.repos.d/*.repo:
+  gpgcheck=0                       # HIGH — packages not verified
+  repo_gpgcheck=0                  # Repo metadata not verified
+  sslverify=0                      # Downloads over cleartext HTTP
+
+Why it matters:
+  Unregistered systems receive no security patches. Disabled GPG checks allow installation of tampered packages.
+
+Remediation:
+  # Register system:
+  subscription-manager register --username <user> --password <pass>
+  subscription-manager attach --auto
+  # Fix GPG checks in all repo files:
+  sed -i 's/gpgcheck=0/gpgcheck=1/g' /etc/yum.repos.d/*.repo
+  # Install security updates:
+  dnf update --security            # RHEL 8/9
+  yum update --security            # RHEL 7
+
+### Issue: RHEL version approaching or past End of Life
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 1.2.2
+Affected: RHEL 6 (EOL), RHEL 7 (maintenance ended Jun 2024)
+
+What to look for:
+  cat /etc/redhat-release
+  # Red Hat Enterprise Linux Server release 6.x  — EOL November 2020
+  # Red Hat Enterprise Linux Server release 7.x  — Maintenance ended June 2024
+  # CentOS Linux release 7 — EOL June 2024
+  # CentOS Linux release 8 — EOL December 2021
+
+Remediation:
+  # Upgrade to supported version (RHEL 8 or 9)
+  # If migration not possible, purchase RHEL ELS (Extended Life Support)
+  # Document risk acceptance if upgrade cannot be performed
+
+## FIREWALLD
+
+### Issue: Firewalld not running or disabled
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 3.5.1.1
+Affected: RHEL 7/8/9
+
+What to look for:
+  systemctl status firewalld
+  # Active: inactive (dead)
+  systemctl is-enabled firewalld
+  # disabled
+
+Remediation:
+  systemctl enable --now firewalld
+  firewall-cmd --set-default-zone=drop
+  firewall-cmd --zone=drop --add-service=ssh --permanent
+  firewall-cmd --reload
+
+## SYSTEMD SERVICE HARDENING
+
+### Issue: Services running without sandboxing
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 5.1.x
+Affected: RHEL 7/8/9
+
+What to look for:
+  # Check service unit files for missing hardening:
+  systemctl cat <service-name>
+  # Missing directives:
+  # PrivateTmp=            # Not set or false
+  # ProtectSystem=         # Not set
+  # ProtectHome=           # Not set
+  # NoNewPrivileges=       # Not set
+  # CapabilityBoundingSet= # Not set (full capabilities)
+  # ReadOnlyDirectories=   # Not set
+
+  # List enabled services (audit for unnecessary):
+  systemctl list-unit-files --state=enabled
+  # Services to disable if not needed:
+  # cups.service, avahi-daemon.service, rpcbind.service
+  # nfs-server.service, vsftpd.service, telnet.socket
+
+Remediation:
+  # Create override for service hardening:
+  systemctl edit <service-name>
+  # Add:
+  [Service]
+  PrivateTmp=true
+  ProtectSystem=strict
+  ProtectHome=true
+  NoNewPrivileges=true
+  CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+  ReadWritePaths=/var/lib/<service>
+
+  # Disable unnecessary services:
+  systemctl disable --now cups.service
+  systemctl disable --now avahi-daemon.service
+  systemctl disable --now rpcbind.service
+  systemctl mask rpcbind.service    # Prevent re-enabling
+
+## FIPS MODE
+
+### Issue: FIPS mode not enabled in FIPS-required environments
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 1.10
+Affected: RHEL 7/8/9 (government/regulated environments)
+
+What to look for:
+  # Check FIPS status:
+  cat /proc/sys/crypto/fips_enabled          # 0 = not enabled
+  fips-mode-setup --check                    # RHEL 8/9
+  sysctl crypto.fips_enabled                 # 0 = not enabled
+  # FIPS required for: FedRAMP, FISMA, DoD, HIPAA (sometimes)
+
+Remediation:
+  # RHEL 8/9 — enable FIPS:
+  fips-mode-setup --enable
+  reboot
+  # RHEL 7:
+  yum install dracut-fips
+  dracut -f
+  # Add fips=1 to kernel boot parameters in /etc/default/grub
+  grub2-mkconfig -o /boot/grub2/grub.cfg
+  reboot
+
+## FILE INTEGRITY
+
+### Issue: AIDE not installed or not configured
+Severity: MEDIUM
+CVSS: 4.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N)
+CIS: 1.3.1, 1.3.2
+Affected: RHEL 7/8/9
+
+What to look for:
+  rpm -q aide                               # Not installed
+  ls /var/lib/aide/aide.db.gz              # Database not initialized
+  crontab -l | grep aide                   # No scheduled check
+  /etc/cron.daily/aide                     # No daily check
+
+Why it matters:
+  Without file integrity monitoring, unauthorized changes to system binaries, configs, or libraries go undetected.
+
+Remediation:
+  # RHEL 8/9:
+  dnf install aide
+  # RHEL 7:
+  yum install aide
+  # Initialize database:
+  aide --init
+  mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+  # Schedule daily check:
+  echo "0 5 * * * /usr/sbin/aide --check" >> /var/spool/cron/root
+  # Or create /etc/cron.daily/aide-check:
+  #!/bin/bash
+  /usr/sbin/aide --check | mail -s "AIDE Report $(hostname)" security@example.com
+
+## RPM INTEGRITY
+
+### Issue: Modified system files detected by RPM verification
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: RHEL 7/8/9
+
+What to look for:
+  rpm -Va
+  # Output flags:
+  # S = file size differs
+  # M = mode differs (permissions/type)
+  # 5 = MD5 sum differs (content changed)
+  # T = modification time differs
+  # U = user ownership differs
+  # G = group ownership differs
+  # Example suspicious output:
+  S.5....T.  c /etc/ssh/sshd_config        # Config modified (expected)
+  S.5....T.    /usr/bin/sudo                # Binary modified (SUSPICIOUS)
+  S.5....T.    /usr/sbin/sshd              # Binary modified (SUSPICIOUS)
+  ..5....T.    /usr/lib64/libpam.so        # PAM library modified (CRITICAL)
+
+Why it matters:
+  Modified system binaries indicate either unauthorized changes or potential trojanized executables. Modified PAM or SSH binaries are common backdoor indicators.
+
+Remediation:
+  # Verify specific package:
+  rpm -V openssh-server
+  # Reinstall modified package:
+  dnf reinstall openssh-server     # RHEL 8/9
+  yum reinstall openssh-server     # RHEL 7
+  # For critical binaries, compare checksums with known-good system
+  # Investigate timeline: when was the file modified?
+  stat /usr/bin/sudo
+
+## AUTHSELECT (RHEL 8+)
+
+### Issue: PAM configuration not managed by authselect
+Severity: LOW
+CVSS: 3.3 (AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N)
+CIS: 5.3.1
+Affected: RHEL 8/9
+
+What to look for:
+  authselect current
+  # "No existing configuration detected"
+  # Or manually modified PAM files:
+  # /etc/pam.d/system-auth, /etc/pam.d/password-auth modified outside authselect
+
+Remediation:
+  # Select and apply profile:
+  authselect select sssd with-faillock with-mkhomedir --force
+  # Enable faillock (account lockout):
+  authselect enable-feature with-faillock
+  # Configure faillock:
+  # /etc/security/faillock.conf:
+  deny = 5
+  unlock_time = 900
+  fail_interval = 900
+
+## SSSD CONFIGURATION
+
+### Issue: SSSD not using TLS for LDAP
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: RHEL 7/8/9
+
+What to look for:
+  /etc/sssd/sssd.conf:
+  [domain/example.com]
+  ldap_uri = ldap://ldap.example.com         # Cleartext
+  ldap_id_use_start_tls = False              # No STARTTLS
+  ldap_tls_reqcert = never                   # Certificate not validated
+  ldap_tls_reqcert = allow                   # Accepts invalid certs
+
+  # Check file permissions:
+  ls -la /etc/sssd/sssd.conf
+  # Must be 600 and owned by root (contains credentials)
+
+Remediation:
+  # /etc/sssd/sssd.conf:
+  [domain/example.com]
+  ldap_uri = ldaps://ldap.example.com
+  ldap_id_use_start_tls = True
+  ldap_tls_reqcert = demand
+  ldap_tls_cacert = /etc/pki/tls/certs/ca-bundle.crt
+  # Fix permissions:
+  chmod 600 /etc/sssd/sssd.conf
+  chown root:root /etc/sssd/sssd.conf
+  systemctl restart sssd

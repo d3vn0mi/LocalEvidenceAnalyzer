@@ -1,6 +1,15 @@
 NETWORK SECURITY ANALYSIS GUIDE
+# Framework: CIS Benchmark, NIST SP 800-41, NIST SP 800-123
+# Scope: Network service analysis, firewall audit, TLS/SSL, DNS, with distro-specific remediation
 
 == Nmap Scan Output Analysis ==
+
+Fortinet FortiGate management ports (if exposed externally):
+- 443/tcp (HTTPS admin): CRITICAL if reachable from internet (CVE-2023-27997, CVE-2024-21762)
+- 541/tcp (FortiGuard): MEDIUM if exposed
+- 8443/tcp (SSL-VPN): HIGH — check FortiOS version for known CVEs
+- 10443/tcp (SSL-VPN alt): HIGH
+- 113/tcp (FortiGate HA heartbeat): MEDIUM if exposed beyond HA pair
 
 Critical ports (if exposed externally):
 - 21/tcp (FTP): Cleartext protocol, HIGH severity if exposed
@@ -47,6 +56,40 @@ iptables/nftables rules:
 - Overly broad source/destination rules: MEDIUM
 - No logging rules for dropped traffic: LOW (audit gap)
 - Rules that are never matched (dead rules): INFO
+
+firewalld (RHEL/CentOS):
+- Check default zone: firewall-cmd --get-default-zone
+- List active zone rules: firewall-cmd --zone=public --list-all
+- Dangerous services in public zone (mysql, vnc-server, nfs): HIGH
+- Runtime vs permanent drift: firewall-cmd --list-all vs --list-all --permanent
+- Direct rules bypassing zones: firewall-cmd --direct --get-all-rules
+Remediation:
+  firewall-cmd --set-default-zone=drop
+  firewall-cmd --zone=drop --add-service=ssh --permanent
+  firewall-cmd --runtime-to-permanent
+  firewall-cmd --reload
+
+UFW (Ubuntu/Debian):
+- Check status: ufw status verbose
+- Inactive = no firewall: HIGH
+- Default allow incoming: HIGH
+- IPv6 disabled (/etc/default/ufw IPV6=no): MEDIUM
+Remediation:
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow ssh
+  ufw enable
+
+nftables (modern replacement for iptables):
+- Check ruleset: nft list ruleset
+- Empty ruleset = no firewall: HIGH
+- policy accept on input/forward chains: HIGH
+Remediation:
+  nft add table inet filter
+  nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
+  nft add rule inet filter input ct state established,related accept
+  nft add rule inet filter input iif lo accept
+  nft add rule inet filter input tcp dport 22 accept
 
 == TLS/SSL Configuration ==
 
