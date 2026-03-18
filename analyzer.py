@@ -23,6 +23,13 @@ CUSTOM_MODEL_NAME = "lea-security"
 
 
 def parse_args():
+    # Detect if the first positional argument is a known subcommand.
+    # If not, inject "analyze" so that `analyzer.py /path` works like
+    # `analyzer.py analyze /path` (backwards-compatible shorthand).
+    known_commands = {"analyze", "build-model", "build-kb"}
+    if len(sys.argv) > 1 and sys.argv[1] not in known_commands and not sys.argv[1].startswith("-"):
+        sys.argv.insert(1, "analyze")
+
     parser = argparse.ArgumentParser(
         description="Analyze security evidence folders using a local LLM and generate a findings report.",
         epilog="Example: python analyzer.py /evidence/host1 /evidence/host2 --output report.md",
@@ -30,7 +37,7 @@ def parse_args():
 
     subparsers = parser.add_subparsers(dest="command")
 
-    # Main analyze command (default when no subcommand given)
+    # Main analyze command
     analyze_parser = subparsers.add_parser("analyze", help="Analyze evidence folders")
     _add_analyze_args(analyze_parser)
 
@@ -55,9 +62,6 @@ def parse_args():
         default=None,
         help="Knowledge base directory (default: ./knowledge_base)",
     )
-
-    # Also allow running without subcommand (backwards compat) — treat positional args as folders
-    _add_analyze_args(parser)
 
     return parser.parse_args()
 
