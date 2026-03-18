@@ -1,0 +1,81 @@
+NETWORK SECURITY ANALYSIS GUIDE
+
+== Nmap Scan Output Analysis ==
+
+Critical ports (if exposed externally):
+- 21/tcp (FTP): Cleartext protocol, HIGH severity if exposed
+  - Anonymous FTP: CRITICAL (CVSS 9.1)
+  - FTP without TLS: HIGH (credentials in cleartext)
+- 23/tcp (Telnet): Cleartext protocol, CRITICAL severity
+  - All data including credentials transmitted in clear
+  - No legitimate reason to use in production
+- 25/tcp (SMTP): Check for open relay, MEDIUM-HIGH
+- 53/tcp/udp (DNS): Check for zone transfer, recursive queries
+- 80/tcp (HTTP): Check for redirect to HTTPS
+- 110/tcp (POP3): Cleartext, HIGH if no STARTTLS
+- 111/tcp (rpcbind): Should not be exposed, MEDIUM
+- 135-139/tcp (NetBIOS/SMB): CRITICAL if exposed externally
+- 143/tcp (IMAP): Cleartext, HIGH if no STARTTLS
+- 161/udp (SNMP): Check for default community strings
+  - "public"/"private" community: HIGH severity
+  - SNMPv1/v2c: credentials in cleartext
+- 443/tcp (HTTPS): Check TLS version and ciphers
+- 445/tcp (SMB): CRITICAL if exposed externally
+  - Check for SMBv1 (EternalBlue vulnerable)
+  - Check for null sessions
+- 1433/tcp (MSSQL): CRITICAL if exposed
+- 1521/tcp (Oracle): CRITICAL if exposed
+- 2049/tcp (NFS): Check exports, HIGH if unrestricted
+- 3306/tcp (MySQL): CRITICAL if exposed externally
+  - Root without password: CRITICAL (CVSS 10.0)
+- 3389/tcp (RDP): HIGH if exposed externally
+  - Check for NLA (Network Level Authentication)
+- 5432/tcp (PostgreSQL): CRITICAL if exposed externally
+- 5900/tcp (VNC): CRITICAL if exposed (often weak/no auth)
+- 6379/tcp (Redis): CRITICAL if no auth (default)
+- 8080/tcp (HTTP Alt): Check for management interfaces
+- 8443/tcp (HTTPS Alt): Check for management interfaces
+- 27017/tcp (MongoDB): CRITICAL if no auth (default pre-4.0)
+
+== Firewall Analysis ==
+
+iptables/nftables rules:
+- Default ACCEPT policy on INPUT: HIGH severity
+  - Should be DROP or REJECT by default
+- ACCEPT all from 0.0.0.0/0: CRITICAL (allows everything)
+- Missing stateful tracking (no -m state/conntrack): MEDIUM
+- Overly broad source/destination rules: MEDIUM
+- No logging rules for dropped traffic: LOW (audit gap)
+- Rules that are never matched (dead rules): INFO
+
+== TLS/SSL Configuration ==
+
+Critical issues:
+- SSLv2 or SSLv3 enabled: CRITICAL (POODLE, DROWN)
+- TLS 1.0 enabled: HIGH (BEAST, deprecated)
+- TLS 1.1 enabled: MEDIUM (deprecated since 2021)
+- TLS 1.2 without AEAD ciphers: MEDIUM
+- TLS 1.3: Recommended, no known issues
+
+Weak cipher suites:
+- RC4: CRITICAL
+- DES/3DES: HIGH
+- NULL ciphers: CRITICAL
+- EXPORT ciphers: CRITICAL
+- CBC mode with TLS 1.0: HIGH (BEAST)
+
+Certificate issues:
+- Self-signed: MEDIUM (no chain of trust)
+- Expired: HIGH
+- Wrong hostname (CN/SAN mismatch): HIGH
+- Key size < 2048 bits: HIGH
+- SHA-1 signature: MEDIUM (deprecated)
+- Wildcard certificate: INFO (broad scope)
+
+== DNS Security ==
+
+- Zone transfer allowed (AXFR): HIGH severity
+  - Reveals entire domain structure
+- Recursive queries from external: MEDIUM (DNS amplification)
+- Missing DNSSEC: INFO
+- Outdated BIND/named version: severity depends on known CVEs

@@ -1,0 +1,59 @@
+LINUX USER AND AUTHENTICATION SECURITY
+
+== /etc/passwd Analysis ==
+
+Critical checks:
+- UID 0 accounts: Only root should have UID 0. Any other account with UID 0 is CRITICAL (CVSS 9.8) - indicates backdoor or compromise
+- Service accounts with shells: accounts like www-data, mysql, nobody should have /usr/sbin/nologin or /bin/false
+- Service accounts with /bin/bash or /bin/sh: MEDIUM severity (CVSS 5.0)
+- Duplicate UIDs: Can cause permission confusion, MEDIUM severity
+
+Password field in /etc/passwd:
+- Should always be "x" (indicating passwords in /etc/shadow)
+- If actual password hash is in /etc/passwd: CRITICAL (all users can read it)
+- Empty password field: CRITICAL (no password required)
+
+== /etc/shadow Analysis ==
+
+Critical checks:
+- World-readable shadow file: CRITICAL (CVSS 9.1) - permissions must be 640 or 600
+- Accounts with empty password field: CRITICAL (CVSS 9.8) - passwordless login
+- Accounts with "!" or "*" prefix: locked, this is normal for service accounts
+- Password age: max days should be 90 or less (check field 5)
+- Minimum password age (field 4) should be at least 1 day
+- Inactive days (field 7) should be set to lock dormant accounts
+
+Weak password hashes:
+- $1$ = MD5 crypt - WEAK, should be HIGH severity
+- $5$ = SHA-256 - Acceptable
+- $6$ = SHA-512 - Recommended
+- $y$ = yescrypt - Best (modern systems)
+- DES (13 chars, no $) - CRITICAL, trivially crackable
+
+== /etc/group and sudo ==
+
+Critical checks:
+- Users in wheel/sudo group: should be minimal, each should be justified
+- Empty groups with elevated privileges
+- GID 0 group members beyond root
+
+sudoers analysis:
+- NOPASSWD entries: HIGH severity unless justified
+- ALL=(ALL) ALL: too broad, violates least privilege
+- !root in Runas: can often be bypassed with sudo -u#-1
+- Wildcards in command specs: often exploitable for privilege escalation
+
+== PAM Configuration ==
+
+Key security modules:
+- pam_faillock / pam_tally2: account lockout after failed attempts
+  Missing = MEDIUM severity
+- pam_pwquality: password complexity enforcement
+  Missing = MEDIUM severity
+- pam_unix: should use sha512 or yescrypt
+  Using md5 = HIGH severity
+
+Password quality (pam_pwquality):
+- minlen >= 14 characters (NIST SP 800-63B)
+- dcredit, ucredit, lcredit, ocredit for complexity
+- reject_username, enforce_for_root

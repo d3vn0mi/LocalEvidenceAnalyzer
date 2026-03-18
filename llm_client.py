@@ -15,28 +15,56 @@ DEFAULT_MODEL = "llama3.1:8b"
 DEFAULT_CHUNK_SIZE = 50000
 
 
+def _extract_model_names(models_response):
+    """Extract model name strings from ollama.list() response.
+
+    Handles both old dict format and newer object/attribute format.
+    """
+    names = []
+
+    # The response may be a dict with "models" key, or an object with .models attr
+    if isinstance(models_response, dict):
+        model_list = models_response.get("models", [])
+    elif hasattr(models_response, "models"):
+        model_list = models_response.models or []
+    else:
+        model_list = []
+
+    for m in model_list:
+        # Each model entry may be a dict or an object
+        if isinstance(m, dict):
+            name = m.get("name", "") or m.get("model", "")
+        else:
+            name = getattr(m, "name", "") or getattr(m, "model", "")
+
+        if name:
+            names.append(name)
+
+    return names
+
+
 def validate_connection(host, model):
     """Validate Ollama is running and the model is available."""
     try:
         client = ollama.Client(host=host)
-        models = client.list()
-        model_names = []
-        for m in models.get("models", []):
-            model_names.append(m.get("name", ""))
-            # Also match without tag (e.g. "llama3.1:8b" matches "llama3.1:8b-instruct-...")
-            base = m.get("name", "").split(":")[0]
-            model_names.append(base)
+        models_response = client.list()
+        available = _extract_model_names(models_response)
 
-        # Check if the requested model (or its base name) is available
+        logger.debug("Available models from Ollama: %s", available)
+
+        # Match: exact match, or base name match (e.g. "llama3.1" matches "llama3.1:8b")
         model_base = model.split(":")[0]
         found = any(
-            model in name or model_base == name.split(":")[0]
-            for name in model_names
+            model == name                              # exact: "llama3.1:8b" == "llama3.1:8b"
+            or model in name                           # substring: "llama3.1:8b" in "llama3.1:8b-instruct-q4"
+            or model_base == name.split(":")[0]        # base: "llama3.1" == "llama3.1"
+            for name in available
         )
+
         if not found:
             print(f"Error: Model '{model}' not found locally.", file=sys.stderr)
             print(f"Pull it with: ollama pull {model}", file=sys.stderr)
-            print(f"Available models: {', '.join(m.get('name', '') for m in models.get('models', []))}", file=sys.stderr)
+            print(f"Available models: {', '.join(available)}", file=sys.stderr)
             sys.exit(1)
 
         return client
@@ -123,12 +151,13 @@ def parse_json_response(text):
     return []
 
 
-def analyze_file(client, content, filepath, host_name, model):
+def analyze_file(client, content, filepath, host_name, model, kb_context=""):
     """Phase 1: Analyze a single file (or chunk) for security findings."""
     prompt = PHASE1_PROMPT_TEMPLATE.format(
         host_name=host_name,
         filepath=filepath,
         content=content,
+        kb_context=kb_context,
     )
 
     try:

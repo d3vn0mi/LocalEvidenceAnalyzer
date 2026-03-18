@@ -1,0 +1,74 @@
+SSH HARDENING GUIDE - CIS Benchmark & Best Practices
+
+== Critical SSH Settings ==
+
+PermitRootLogin:
+- MUST be set to "no" or "prohibit-password"
+- PermitRootLogin yes is HIGH severity (CVSS ~8.1)
+- Allows direct root access, bypasses audit trail
+- Remediation: Set "PermitRootLogin no" in /etc/ssh/sshd_config
+
+PasswordAuthentication:
+- SHOULD be set to "no" (use key-based auth)
+- PasswordAuthentication yes enables brute-force attacks
+- MEDIUM severity (CVSS ~5.3) when combined with rate limiting
+- HIGH severity (CVSS ~7.5) without fail2ban or similar
+- Remediation: Set "PasswordAuthentication no", configure SSH keys
+
+Protocol:
+- Must use Protocol 2 only
+- Protocol 1 has known cryptographic weaknesses
+- SSHv1 is CRITICAL severity if still enabled
+
+MaxAuthTries:
+- Should be 4 or fewer
+- Default of 6 is too permissive
+- Remediation: Set "MaxAuthTries 3" in sshd_config
+
+PermitEmptyPasswords:
+- MUST be "no"
+- CRITICAL if set to "yes" (CVSS 9.8)
+- Allows authentication without any password
+
+X11Forwarding:
+- Should be "no" unless required
+- Can be used for display hijacking attacks
+- LOW severity in most contexts
+
+AllowTcpForwarding:
+- Should be "no" unless required
+- Can be used to tunnel unauthorized traffic
+- MEDIUM severity on bastion hosts
+
+ClientAliveInterval/ClientAliveCountMax:
+- Set ClientAliveInterval to 300 (5 minutes)
+- Set ClientAliveCountMax to 3
+- Prevents idle sessions from persisting
+
+== Cipher and Key Exchange ==
+
+Weak ciphers to disable:
+- arcfour, arcfour128, arcfour256 (RC4)
+- 3des-cbc
+- blowfish-cbc
+- cast128-cbc
+
+Recommended ciphers:
+- chacha20-poly1305@openssh.com
+- aes256-gcm@openssh.com
+- aes128-gcm@openssh.com
+- aes256-ctr, aes192-ctr, aes128-ctr
+
+Weak MACs to disable:
+- hmac-md5, hmac-md5-96
+- hmac-sha1-96
+
+Weak KexAlgorithms to disable:
+- diffie-hellman-group1-sha1
+- diffie-hellman-group14-sha1
+
+== SSH Key Management ==
+- Minimum RSA key size: 2048 bits (recommend 4096)
+- Prefer Ed25519 keys over RSA
+- Rotate keys periodically (at least annually)
+- Use ssh-agent, never store unencrypted private keys

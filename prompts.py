@@ -11,7 +11,7 @@ PHASE1_PROMPT_TEMPLATE = """Analyze the following evidence file for security iss
 
 Host: {host_name}
 File: {filepath}
-Content:
+{kb_context}Content:
 ---
 {content}
 ---
