@@ -4,6 +4,7 @@
 import argparse
 import logging
 import os
+import signal
 import subprocess
 import sys
 
@@ -20,6 +21,36 @@ from llm_client import (
 from report import findings_from_dicts, render_html, render_markdown
 
 CUSTOM_MODEL_NAME = "lea-security"
+
+# Signals the analysis loop to stop and generate a partial report
+_interrupted = False
+
+
+def _handle_interrupt(signum, frame):
+    """Handle Ctrl+C during analysis."""
+    global _interrupted
+
+    if _interrupted:
+        # Second Ctrl+C — abort immediately
+        print("\nAborting immediately.", file=sys.stderr)
+        sys.exit(130)
+
+    print(file=sys.stderr)
+    print("\nInterrupted! What would you like to do?", file=sys.stderr)
+    print("  [g] Generate report with findings collected so far", file=sys.stderr)
+    print("  [q] Quit without generating a report", file=sys.stderr)
+
+    try:
+        choice = input("Choice [g/q]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborting.", file=sys.stderr)
+        sys.exit(130)
+
+    if choice == "g":
+        _interrupted = True  # signal the loop to stop
+    else:
+        print("Exiting.", file=sys.stderr)
+        sys.exit(130)
 
 
 def parse_args():
@@ -175,8 +206,50 @@ def _get_kb_context(kb, content, filepath):
     return "\n".join(context_parts)
 
 
+def _generate_report(all_raw_findings, hosts, all_skipped, args, client, partial=False):
+    """Consolidate findings and render the final report."""
+    if partial:
+        print(f"\nGenerating partial report with {len(all_raw_findings)} finding(s) collected so far...",
+              file=sys.stderr)
+
+    # Phase 2: Consolidation
+    if all_raw_findings:
+        if args.verbose:
+            print("Consolidating and deduplicating findings...")
+        # Restore default signal handling during consolidation so a second
+        # Ctrl+C during this phase aborts cleanly
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        consolidated = consolidate_findings(
+            client, all_raw_findings, args.model, args.chunk_size
+        )
+        if args.verbose:
+            print(f"Consolidated to {len(consolidated)} findings")
+    else:
+        consolidated = []
+
+    # Convert to Finding objects
+    findings = findings_from_dicts(consolidated)
+
+    # Render report
+    if args.output_format == "html":
+        report = render_html(findings, hosts, all_skipped)
+    else:
+        report = render_markdown(findings, hosts, all_skipped)
+
+    # Output
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            f.write(report)
+        print(f"Report saved to {args.output}")
+    else:
+        print(report)
+
+
 def run_analysis(args):
     """Run the main analysis pipeline."""
+    global _interrupted
+    _interrupted = False
+
     if not args.folders:
         print("Error: At least one evidence folder is required.", file=sys.stderr)
         print("Usage: python analyzer.py [analyze] <folder1> [folder2] ...", file=sys.stderr)
@@ -216,12 +289,18 @@ def run_analysis(args):
     if args.verbose:
         print(f"Using model: {args.model}")
 
+    # Install Ctrl+C handler for graceful interruption
+    signal.signal(signal.SIGINT, _handle_interrupt)
+
     # Phase 1: Per-file analysis
     all_raw_findings = []
     all_skipped = []
     hosts = []
 
     for folder in args.folders:
+        if _interrupted:
+            break
+
         host_name = os.path.basename(os.path.abspath(folder))
         hosts.append(host_name)
 
@@ -239,6 +318,9 @@ def run_analysis(args):
             print(f"Found {len(files)} text files ({len(skipped)} skipped)")
 
         for i, (filepath, content) in enumerate(files, 1):
+            if _interrupted:
+                break
+
             if args.verbose:
                 print(f"  [{i}/{len(files)}] Analyzing {filepath}...")
 
@@ -251,6 +333,9 @@ def run_analysis(args):
 
             chunks = chunk_content(content, args.chunk_size)
             for chunk_idx, chunk in enumerate(chunks):
+                if _interrupted:
+                    break
+
                 if args.verbose and len(chunks) > 1:
                     print(f"    Chunk {chunk_idx + 1}/{len(chunks)}")
 
@@ -263,37 +348,10 @@ def run_analysis(args):
                 if args.verbose and findings:
                     print(f"    Found {len(findings)} finding(s)")
 
-    if args.verbose:
+    if args.verbose and not _interrupted:
         print(f"\n--- Phase 1 complete: {len(all_raw_findings)} raw findings ---")
 
-    # Phase 2: Consolidation
-    if all_raw_findings:
-        if args.verbose:
-            print("Consolidating and deduplicating findings...")
-        consolidated = consolidate_findings(
-            client, all_raw_findings, args.model, args.chunk_size
-        )
-        if args.verbose:
-            print(f"Consolidated to {len(consolidated)} findings")
-    else:
-        consolidated = []
-
-    # Convert to Finding objects
-    findings = findings_from_dicts(consolidated)
-
-    # Render report
-    if args.output_format == "html":
-        report = render_html(findings, hosts, all_skipped)
-    else:
-        report = render_markdown(findings, hosts, all_skipped)
-
-    # Output
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            f.write(report)
-        print(f"Report saved to {args.output}")
-    else:
-        print(report)
+    _generate_report(all_raw_findings, hosts, all_skipped, args, client, partial=_interrupted)
 
 
 def main():
