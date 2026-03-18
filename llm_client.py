@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "llama3.1:8b"
 DEFAULT_CHUNK_SIZE = 50000
+# Maximum tokens the LLM may generate per response.  Raising this reduces
+# the chance of truncated JSON output.
+DEFAULT_NUM_PREDICT = 8192
 
 
 def _extract_model_names(models_response):
@@ -101,6 +104,68 @@ def chunk_content(content, max_chars=DEFAULT_CHUNK_SIZE):
     return chunks
 
 
+def _extract_complete_objects(text):
+    """Extract all complete top-level JSON objects from a (possibly truncated) string.
+
+    Walks the text character-by-character tracking brace depth and string
+    state so that even if the array or the last object is cut off, all
+    fully-closed objects are recovered.
+    """
+    objects = []
+    i = 0
+    length = len(text)
+
+    while i < length:
+        # Find the next opening brace that starts a top-level object
+        if text[i] != '{':
+            i += 1
+            continue
+
+        depth = 0
+        in_string = False
+        escape = False
+        start = i
+
+        j = i
+        while j < length:
+            ch = text[j]
+
+            if escape:
+                escape = False
+                j += 1
+                continue
+
+            if ch == '\\' and in_string:
+                escape = True
+                j += 1
+                continue
+
+            if ch == '"':
+                in_string = not in_string
+            elif not in_string:
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        # Found a complete object
+                        candidate = text[start:j + 1]
+                        try:
+                            obj = json.loads(candidate)
+                            if isinstance(obj, dict):
+                                objects.append(obj)
+                        except json.JSONDecodeError:
+                            pass
+                        i = j + 1
+                        break
+            j += 1
+        else:
+            # Reached end of text without closing the object — it's truncated
+            break
+
+    return objects
+
+
 def parse_json_response(text):
     """Extract JSON array from LLM response with multiple fallback strategies."""
     text = text.strip()
@@ -147,8 +212,35 @@ def parse_json_response(text):
         except json.JSONDecodeError:
             pass
 
+    # Strategy 5: Truncated response — extract all complete JSON objects
+    # The LLM may have run out of tokens mid-array, leaving the last object
+    # or the closing bracket incomplete. Salvage every fully-closed object.
+    objects = _extract_complete_objects(text)
+    if objects:
+        logger.warning(
+            "LLM response was truncated; salvaged %d complete finding(s) from partial JSON",
+            len(objects),
+        )
+        return objects
+
     logger.warning("Failed to parse JSON from LLM response: %s...", text[:200])
     return []
+
+
+def _get_response_text(response):
+    """Extract the message content string from an Ollama chat response.
+
+    Handles both dict format (older client) and object/attribute format (newer client).
+    """
+    if isinstance(response, dict):
+        return response.get("message", {}).get("content", "")
+    # Newer ollama client returns an object with .message.content
+    msg = getattr(response, "message", None)
+    if msg is None:
+        return ""
+    if isinstance(msg, dict):
+        return msg.get("content", "")
+    return getattr(msg, "content", "")
 
 
 def analyze_file(client, content, filepath, host_name, model, kb_context=""):
@@ -167,8 +259,9 @@ def analyze_file(client, content, filepath, host_name, model, kb_context=""):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
+            options={"num_predict": DEFAULT_NUM_PREDICT},
         )
-        return parse_json_response(response["message"]["content"])
+        return parse_json_response(_get_response_text(response))
     except Exception as e:
         logger.warning("LLM error analyzing %s: %s", filepath, e)
         return []
@@ -229,8 +322,9 @@ def _consolidate_batch(client, findings_json, model):
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
+            options={"num_predict": DEFAULT_NUM_PREDICT},
         )
-        return parse_json_response(response["message"]["content"])
+        return parse_json_response(_get_response_text(response))
     except Exception as e:
         logger.warning("LLM error during consolidation: %s", e)
         return []
