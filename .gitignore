@@ -1,2 +1,4 @@
 __pycache__/
 .kb_index.json
+test_evidence/
+.venv/
