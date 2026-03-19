@@ -8,6 +8,7 @@
     <a href="#installation">Installation</a> &bull;
     <a href="#quick-start">Quick Start</a> &bull;
     <a href="#usage">Usage</a> &bull;
+    <a href="#knowledge-base-rag">Knowledge Base</a> &bull;
     <a href="#recommended-models">Models</a> &bull;
     <a href="#license">License</a>
   </p>
@@ -20,18 +21,21 @@
 
 ---
 
-A Python CLI tool that analyzes security evidence folders using a local LLM (via [Ollama](https://ollama.ai)) and generates structured security assessment reports with CVSSv3-scored findings. Everything runs locally — your evidence never leaves your machine.
+A Python CLI tool that analyzes security evidence folders using a local LLM (via [Ollama](https://ollama.ai)) and generates structured security assessment reports with CVSSv3-scored findings. Built for forensics analysts and pentesters. Everything runs locally — your evidence never leaves your machine.
 
 ## Features
 
-- **Recursive evidence scanning** — configs, logs, scan outputs, text files
+- **Recursive evidence scanning** — configs, logs, scan outputs, text files with file type filtering
 - **Multi-host support** — analyze multiple hosts in a single run
 - **Two-phase LLM analysis** — per-file analysis + cross-file deduplication and consolidation
 - **CVSSv3 scoring** — vector strings and base scores for every finding
 - **Evidence traceability** — each finding references its source file
 - **Markdown & HTML reports** — professional output ready for clients
+- **Rich progress UI** — animated progress bars, severity breakdown, and file-by-file status
+- **Auto-save checkpoint** — progress saved to disk after each file; resume after crashes or power loss
 - **Custom security model** — Ollama Modelfile with CIS/STIG/NIST/OWASP tuning and few-shot examples
-- **RAG knowledge base** — enrich analysis with your own security reference documents
+- **RAG knowledge base** — 13 built-in security reference documents covering Linux, Fortinet, OWASP, LDAP, and more
+- **File type filtering** — `--include-ext` / `--exclude-ext` to target specific file types
 - **Graceful interruption** — press Ctrl+C to generate a partial report or quit
 - **Fully offline** — no data leaves your machine
 
@@ -61,6 +65,14 @@ curl -fsSL https://ollama.ai/install.sh | sh
 # Pull the default model
 ollama pull llama3.1:8b
 ```
+
+### Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `ollama` | Local LLM API client |
+| `jinja2` | HTML report templating |
+| `rich` | Progress bars, panels, and styled terminal output |
 
 ## Quick Start
 
@@ -99,13 +111,57 @@ python analyzer.py analyze /evidence/host1 --model qwen2.5:32b
 # Use the custom security model with knowledge base
 python analyzer.py analyze /evidence/host1 --model lea-security --kb
 
+# Only analyze specific file types
+python analyzer.py analyze /evidence/host1 --include-ext .conf .txt .sh .py
+
+# Skip certain file types
+python analyzer.py analyze /evidence/host1 --exclude-ext .log .bak .tmp
+
 # Shorthand (omit "analyze" subcommand)
 python analyzer.py /evidence/host1 --verbose
 ```
 
+### Progress UI
+
+When running with `--verbose` or `--output`, a rich live display shows real-time progress:
+
+```
+╭─ LocalEvidenceAnalyzer ────────────────────────╮
+│ Hosts: webserver01                              │
+│ Model: lea-security                             │
+│ Features: KB (130 chunks) | Checkpoint: saved   │
+╰─────────────────────────────────────────────────╯
+
+ ⠋ Phase 1 ━━━━━━━━━━━━━━━━━━━━━╸━━━━━━━  10/15 files  0:02:30
+
+ ✓ etc/ssh/sshd_config          3 findings
+ ✓ etc/passwd                   2 findings
+ ✓ nmap_scan.txt                5 findings
+ ⠋ apache_config.conf           analyzing...
+
+ Findings: 42 raw  Critical: 3  High: 12  Medium: 18  Low: 9
+```
+
+After completion, a styled summary table is displayed:
+
+```
+┌─── Final Report Summary ───┐
+│ Severity   │ Count         │
+├────────────┼───────────────┤
+│ Critical   │     3         │
+│ High       │    12         │
+│ Medium     │    18         │
+│ Low        │     9         │
+├────────────┼───────────────┤
+│ Total      │    42         │
+└────────────┴───────────────┘
+
+Report saved to: report.md
+```
+
 ### Auto-Save Checkpoint
 
-Analysis progress is **automatically saved to disk** after each file is processed. If the process is killed, the PC shuts down, or an error occurs, no work is lost.
+Analysis progress is **automatically saved to disk** after each file is processed. If the process crashes, is killed, or the PC shuts down, no work is lost.
 
 ```bash
 # On next run with the same evidence folders, you'll be prompted:
@@ -121,7 +177,7 @@ python analyzer.py analyze /evidence/host1 --resume
 python analyzer.py analyze /evidence/host1 --no-checkpoint
 ```
 
-The checkpoint file is automatically deleted after a report is successfully generated.
+Checkpoint files are written atomically (crash-safe) and automatically deleted after a report is successfully generated.
 
 ### Graceful Interruption
 
@@ -150,7 +206,7 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 | `--kb-dir` | `./knowledge_base` | Custom knowledge base directory |
 | `--include-ext` | all text files | Only analyze these extensions (e.g. `.py .sh .conf`) |
 | `--exclude-ext` | none | Skip files with these extensions (e.g. `.log .bak`) |
-| `--verbose, -v` | off | Show analysis progress |
+| `--verbose, -v` | off | Show rich progress UI |
 | `--no-checkpoint` | off | Disable auto-save checkpoint |
 | `--resume` | off | Resume from checkpoint without prompting |
 
@@ -158,7 +214,7 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 
 | Command | Description |
 |---------|-------------|
-| `analyze` | Analyze evidence folders *(default)* |
+| `analyze` | Analyze evidence folders *(default when omitted)* |
 | `build-model` | Build the custom `lea-security` Ollama model from Modelfile |
 | `build-kb` | Build or rebuild the knowledge base index |
 
@@ -166,13 +222,14 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 
 ```
 Evidence Folders ──> File Walker ──> Phase 1: Per-File Analysis ──> Phase 2: Consolidation ──> Report
-                                          (LLM + RAG)              (Dedup + CVSS ranking)
+                     (filter by        (LLM + RAG context)         (Dedup + CVSS ranking)
+                      extension)        [checkpoint after each]
 ```
 
-1. **File Walking** — Recursively scans each host folder, reads text files, skips binaries
-2. **Phase 1 — Per-File Analysis** — Each file is sent to the LLM for focused security analysis; large files are chunked on line boundaries; optional RAG context is injected from the knowledge base
-3. **Phase 2 — Consolidation** — All raw findings are deduplicated, CVSS scores are refined, and findings are ranked by severity
-4. **Report Generation** — Findings are rendered as a Markdown or HTML report with executive summary, per-finding details, and evidence references
+1. **File Walking** — Recursively scans each host folder, reads text files, skips binaries. Optionally filters by extension with `--include-ext` / `--exclude-ext`.
+2. **Phase 1 — Per-File Analysis** — Each file is sent to the LLM for focused security analysis. Large files are chunked on line boundaries. Optional RAG context is injected from the knowledge base. Progress is checkpointed after each file.
+3. **Phase 2 — Consolidation** — All raw findings are deduplicated, CVSS scores are refined, and findings are ranked by severity.
+4. **Report Generation** — Findings are rendered as a Markdown or HTML report with executive summary, per-finding details, and evidence references.
 
 ### Report Structure
 
@@ -201,16 +258,28 @@ python analyzer.py analyze /evidence/host1 --model lea-security
 
 ## Knowledge Base (RAG)
 
-Add security reference documents to `knowledge_base/` to enrich analysis with domain-specific context. Uses a lightweight keyword-based retrieval system — no heavy vector DB dependencies.
+The tool includes a comprehensive security knowledge base with **13 reference documents** covering forensics, pentesting, and configuration auditing. Uses a lightweight keyword-based retrieval system — no heavy vector DB dependencies.
 
-**Included references:**
-- SSH hardening (CIS benchmarks)
-- Linux user/authentication security
-- Network security (port analysis, TLS, firewalls)
-- Web server security (Apache, Nginx, headers)
-- System hardening (kernel, filesystem, services)
+### Built-in Reference Documents
 
-**Add your own:**
+| Document | Coverage |
+|----------|----------|
+| `ssh_hardening.txt` | SSH config directives, ciphers, key management (CIS) |
+| `linux_user_security.txt` | passwd/shadow analysis, sudo, PAM, SSSD (per-distro) |
+| `system_hardening.txt` | Kernel sysctl, file permissions, services, auditd (per-distro) |
+| `network_security.txt` | Nmap port analysis, TLS/SSL, DNS, firewalld/UFW/nftables |
+| `web_server_security.txt` | Apache/Nginx configs, security headers, web app indicators |
+| `fortinet_security.txt` | FortiGate admin, policies, VPN, known CVEs (CVE-2022-42475, etc.) |
+| `firewall_hardening.txt` | iptables, nftables, firewalld (RHEL), UFW (Ubuntu/Debian) |
+| `owasp_top10.txt` | OWASP A01–A10 (2021) with config patterns and log indicators |
+| `ldap_security.txt` | OpenLDAP, 389 DS, ACLs, TLS, password policy, replication |
+| `linux_rhel_hardening.txt` | SELinux, FIPS, RPM integrity, AIDE, authselect (RHEL/CentOS) |
+| `linux_ubuntu_debian_hardening.txt` | AppArmor, APT security, UFW, debsums, snap (Ubuntu/Debian) |
+| `privilege_escalation.txt` | SUID/GTFOBins, sudo misconfigs, capabilities, container escape |
+| `log_forensics.txt` | Brute force, persistence, lateral movement, log tampering, web shells |
+
+### Add Your Own References
+
 ```bash
 # Add .txt files — CIS benchmarks, runbooks, CVE lists, etc.
 cp my_security_guide.txt knowledge_base/
@@ -232,6 +301,36 @@ python analyzer.py analyze /evidence/host1 --kb --verbose
 | `qwen2.5:14b` | ~9 GB | ~12 GB | Moderate | Better structured JSON output |
 | `qwen2.5:32b` | ~20 GB | ~24 GB | Slower | Best quality — recommended for 32GB+ RAM |
 | `mistral-small:24b` | ~15 GB | ~18 GB | Moderate | Strong reasoning |
+
+## Project Structure
+
+```
+LocalEvidenceAnalyzer/
+├── analyzer.py             # CLI entrypoint + orchestration
+├── file_walker.py          # Recursive dir walk, binary detection, extension filtering
+├── llm_client.py           # Ollama wrapper, chunking, JSON parsing
+├── prompts.py              # LLM prompt templates (Phase 1 + Phase 2)
+├── report.py               # Finding dataclass, Markdown + HTML rendering
+├── progress.py             # Rich progress bars and live display
+├── knowledge_base.py       # RAG keyword index and retrieval
+├── Modelfile               # Custom Ollama model definition
+├── requirements.txt        # Python dependencies
+├── knowledge_base/         # Security reference documents (13 files)
+│   ├── ssh_hardening.txt
+│   ├── linux_user_security.txt
+│   ├── system_hardening.txt
+│   ├── network_security.txt
+│   ├── web_server_security.txt
+│   ├── fortinet_security.txt
+│   ├── firewall_hardening.txt
+│   ├── owasp_top10.txt
+│   ├── ldap_security.txt
+│   ├── linux_rhel_hardening.txt
+│   ├── linux_ubuntu_debian_hardening.txt
+│   ├── privilege_escalation.txt
+│   └── log_forensics.txt
+└── LICENSE                 # MIT License
+```
 
 ## Evidence Folder Structure
 
