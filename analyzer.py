@@ -473,6 +473,34 @@ def _generate_report(all_raw_findings, hosts, all_skipped, args, client,
         _remove_checkpoint(ckpt_path)
 
 
+def _setup_results_dir(args):
+    """Create a timestamped results directory and set output path automatically.
+
+    When the user does NOT provide --output, we create:
+        results/<YYYYMMDD_HHMMSS>/report.<format>
+        results/<YYYYMMDD_HHMMSS>/command.txt
+
+    If the user sets --output manually, this function is a no-op (bypass).
+    """
+    if args.output:
+        # User explicitly chose an output path — respect it.
+        return
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_dir = os.path.join(os.path.dirname(__file__) or ".", "results", timestamp)
+    os.makedirs(results_dir, exist_ok=True)
+
+    # Save the exact command used
+    command_file = os.path.join(results_dir, "command.txt")
+    with open(command_file, "w", encoding="utf-8") as f:
+        f.write(" ".join(sys.argv) + "\n")
+
+    # Set the output path so the rest of the pipeline writes there
+    ext = "html" if args.output_format == "html" else "md"
+    args.output = os.path.join(results_dir, f"report.{ext}")
+    print(f"Results directory: {results_dir}", file=sys.stderr)
+
+
 def run_analysis(args):
     """Run the main analysis pipeline."""
     global _interrupted
@@ -482,6 +510,9 @@ def run_analysis(args):
         print("Error: At least one evidence folder is required.", file=sys.stderr)
         print("Usage: python analyzer.py [analyze] <folder1> [folder2] ...", file=sys.stderr)
         sys.exit(1)
+
+    # Set up timestamped results directory (unless user specified --output)
+    _setup_results_dir(args)
 
     # Configure logging
     log_level = logging.DEBUG if args.verbose else logging.WARNING
