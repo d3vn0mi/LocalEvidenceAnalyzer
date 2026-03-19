@@ -251,6 +251,13 @@ def _add_analyze_args(parser):
         help="Number of parallel file analysis workers (default: 1). "
              "Set higher to utilize more CPU cores with Ollama.",
     )
+    parser.add_argument(
+        "--live",
+        metavar="FILE",
+        default=None,
+        help="Write a live-updating HTML report to FILE during analysis. "
+             "Open it in a browser to watch findings appear in real time.",
+    )
 
 
 def build_model(ollama_host, base_model=None, with_kb=False, kb_dir=None):
@@ -391,6 +398,20 @@ def _get_kb_context(kb, content, filepath):
     return "\n".join(context_parts)
 
 
+def _write_live_report(live_path, raw_findings, hosts, files_done, files_total,
+                       skipped_files, is_complete=False):
+    """Write an auto-refreshing HTML report atomically."""
+    from report import render_live_html
+    html = render_live_html(
+        raw_findings, hosts, files_done, files_total,
+        skipped_files=skipped_files, is_complete=is_complete,
+    )
+    tmp = live_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(html)
+    os.replace(tmp, live_path)
+
+
 def _generate_report(all_raw_findings, hosts, all_skipped, args, client,
                      partial=False, ckpt_path=None, progress=None):
     """Consolidate findings and render the final report."""
@@ -469,6 +490,12 @@ def run_analysis(args):
     for folder in args.folders:
         if not os.path.isdir(folder):
             print(f"Error: Evidence folder not found: {folder}", file=sys.stderr)
+            sys.exit(1)
+
+    # Validate --live and --output don't point to same file
+    if args.live and args.output:
+        if os.path.abspath(args.live) == os.path.abspath(args.output):
+            print("Error: --live and --output cannot point to the same file.", file=sys.stderr)
             sys.exit(1)
 
     # Initialize knowledge base if requested
@@ -550,6 +577,17 @@ def run_analysis(args):
 
     progress.start()
 
+    # Live report tracking
+    live_files_done = len(processed_files)
+    live_files_total = 0
+
+    # Write initial (empty) live report so user can open it right away
+    if args.live:
+        _write_live_report(args.live, all_raw_findings, hosts,
+                           live_files_done, live_files_total, all_skipped)
+        print(f"Live report: {os.path.abspath(args.live)} (open in browser)",
+              file=sys.stderr)
+
     try:
         for folder in args.folders:
             if _interrupted:
@@ -571,6 +609,7 @@ def run_analysis(args):
                 continue
 
             progress.start_host(host_name, len(files), len(skipped))
+            live_files_total += len(files)
 
             # Filter out already-processed files (checkpoint resume)
             pending_files = []
@@ -609,6 +648,11 @@ def run_analysis(args):
 
                     progress.add_findings(file_findings)
                     progress.finish_file(filepath, len(file_findings))
+
+                    live_files_done += 1
+                    if args.live:
+                        _write_live_report(args.live, all_raw_findings, hosts,
+                                           live_files_done, live_files_total, all_skipped)
 
                     if use_checkpoint and not _interrupted:
                         processed_files.add(f"{host_name}/{filepath}")
@@ -655,6 +699,11 @@ def run_analysis(args):
                         progress.add_findings(file_findings)
                         progress.finish_file(filepath, len(file_findings))
 
+                        live_files_done += 1
+                        if args.live:
+                            _write_live_report(args.live, all_raw_findings, hosts,
+                                               live_files_done, live_files_total, all_skipped)
+
                         if use_checkpoint and not _interrupted:
                             processed_files.add(f"{host_name}/{filepath}")
                             _save_checkpoint(ckpt_path, all_raw_findings, all_skipped,
@@ -663,6 +712,12 @@ def run_analysis(args):
 
         _generate_report(all_raw_findings, hosts, all_skipped, args, client,
                          partial=_interrupted, ckpt_path=ckpt_path, progress=progress)
+
+        # Final live report write (remove auto-refresh, show "complete")
+        if args.live:
+            _write_live_report(args.live, all_raw_findings, hosts,
+                               live_files_done, live_files_total, all_skipped,
+                               is_complete=True)
     finally:
         progress.stop()
 

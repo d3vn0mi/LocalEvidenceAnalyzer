@@ -31,6 +31,7 @@ A Python CLI tool that analyzes security evidence folders using a local LLM (via
 - **CVSSv3 scoring** — vector strings and base scores for every finding
 - **Evidence traceability** — each finding references its source file
 - **Markdown & HTML reports** — professional output ready for clients
+- **Live HTML preview** — watch findings populate in your browser in real time with `--live`
 - **Rich progress UI** — animated progress bars, severity breakdown, and file-by-file status
 - **Auto-save checkpoint** — progress saved to disk after each file; resume after crashes or power loss
 - **Custom security model** — Ollama Modelfile with CIS/STIG/NIST/OWASP tuning and few-shot examples
@@ -122,6 +123,9 @@ python analyzer.py analyze /evidence/host1 --include-ext .conf .txt .sh .py
 
 # Skip certain file types
 python analyzer.py analyze /evidence/host1 --exclude-ext .log .bak .tmp
+
+# Live HTML preview — open live.html in your browser during analysis
+python analyzer.py analyze /evidence/host1 --live live.html --verbose
 
 # Parallel analysis — 4 files at a time (set OLLAMA_NUM_PARALLEL=4 first)
 python analyzer.py analyze /evidence/host1 --workers 4 --verbose
@@ -215,6 +219,7 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 | `--kb-dir` | `./knowledge_base` | Custom knowledge base directory |
 | `--include-ext` | all text files | Only analyze these extensions (e.g. `.py .sh .conf`) |
 | `--exclude-ext` | none | Skip files with these extensions (e.g. `.log .bak`) |
+| `--live` | none | Write a live-updating HTML report to FILE (auto-refreshes in browser) |
 | `--verbose, -v` | off | Show rich progress UI |
 | `--workers, -w` | `1` | Number of parallel file analysis workers (see [Performance Tuning](#performance-tuning)) |
 | `--no-checkpoint` | off | Disable auto-save checkpoint |
