@@ -148,6 +148,8 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 | `--chunk-size` | `50000` | Max chars per LLM chunk |
 | `--kb` | off | Enable knowledge base RAG enrichment |
 | `--kb-dir` | `./knowledge_base` | Custom knowledge base directory |
+| `--include-ext` | all text files | Only analyze these extensions (e.g. `.py .sh .conf`) |
+| `--exclude-ext` | none | Skip files with these extensions (e.g. `.log .bak`) |
 | `--verbose, -v` | off | Show analysis progress |
 | `--no-checkpoint` | off | Disable auto-save checkpoint |
 | `--resume` | off | Resume from checkpoint without prompting |
