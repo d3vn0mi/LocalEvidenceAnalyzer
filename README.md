@@ -123,6 +123,9 @@ python analyzer.py analyze /evidence/host1 --include-ext .conf .txt .sh .py
 # Skip certain file types
 python analyzer.py analyze /evidence/host1 --exclude-ext .log .bak .tmp
 
+# Parallel analysis — 4 files at a time (set OLLAMA_NUM_PARALLEL=4 first)
+python analyzer.py analyze /evidence/host1 --workers 4 --verbose
+
 # Shorthand (omit "analyze" subcommand)
 python analyzer.py /evidence/host1 --verbose
 ```
@@ -213,6 +216,7 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 | `--include-ext` | all text files | Only analyze these extensions (e.g. `.py .sh .conf`) |
 | `--exclude-ext` | none | Skip files with these extensions (e.g. `.log .bak`) |
 | `--verbose, -v` | off | Show rich progress UI |
+| `--workers, -w` | `1` | Number of parallel file analysis workers (see [Performance Tuning](#performance-tuning)) |
 | `--no-checkpoint` | off | Disable auto-save checkpoint |
 | `--resume` | off | Resume from checkpoint without prompting |
 
@@ -317,6 +321,41 @@ python analyzer.py build-kb
 # Analyze with KB enabled
 python analyzer.py analyze /evidence/host1 --kb --verbose
 ```
+
+## Performance Tuning
+
+By default, files are analyzed one at a time. If you have idle CPU/GPU capacity (common on multi-core Macs or machines with powerful GPUs), use `--workers` to analyze multiple files in parallel:
+
+```bash
+# Analyze 4 files at a time
+python analyzer.py analyze /evidence/host1 --workers 4 --verbose
+
+# Combine with your custom model
+python analyzer.py analyze /evidence/host1 --model lea-security --workers 4 --verbose
+```
+
+### Ollama Parallel Slots
+
+Ollama must also be configured to handle concurrent requests. By default Ollama processes one request at a time. Set the `OLLAMA_NUM_PARALLEL` environment variable **before starting Ollama**:
+
+```bash
+# Allow Ollama to process 4 requests concurrently
+OLLAMA_NUM_PARALLEL=4 ollama serve
+
+# Or export it in your shell profile
+export OLLAMA_NUM_PARALLEL=4
+```
+
+### Recommended Settings
+
+| Machine | `--workers` | `OLLAMA_NUM_PARALLEL` | Notes |
+|---------|-------------|----------------------|-------|
+| 8 GB RAM, 8b model | 1–2 | 2 | Conservative — avoids swapping |
+| 16 GB RAM, 8b model | 2–4 | 4 | Good balance |
+| 32 GB RAM, 32b model | 2–3 | 3 | Larger models need more RAM per slot |
+| 64 GB+ RAM or GPU offload | 4–8 | 8 | Max throughput |
+
+**Tip:** `--workers` should not exceed `OLLAMA_NUM_PARALLEL` — extra workers will just queue on the Ollama side.
 
 ## Recommended Models
 

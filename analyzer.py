@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from file_walker import walk_evidence
@@ -242,6 +243,13 @@ def _add_analyze_args(parser):
         action="store_true",
         default=False,
         help="Resume from a previous checkpoint without prompting",
+    )
+    parser.add_argument(
+        "--workers", "-w",
+        type=int,
+        default=1,
+        help="Number of parallel file analysis workers (default: 1). "
+             "Set higher to utilize more CPU cores with Ollama.",
     )
 
 
@@ -564,45 +572,94 @@ def run_analysis(args):
 
             progress.start_host(host_name, len(files), len(skipped))
 
-            for i, (filepath, content) in enumerate(files, 1):
-                if _interrupted:
-                    break
-
-                # Skip files already processed in a resumed checkpoint
+            # Filter out already-processed files (checkpoint resume)
+            pending_files = []
+            for filepath, content in files:
                 file_key = f"{host_name}/{filepath}"
                 if file_key in processed_files:
                     progress.skip_file(filepath)
-                    continue
+                else:
+                    pending_files.append((filepath, content))
 
-                progress.start_file(filepath)
+            num_workers = max(1, args.workers)
 
-                # Get KB context if available
-                kb_context = ""
-                if kb:
-                    kb_context = _get_kb_context(kb, content, filepath)
-
-                file_findings = []
-                chunks = chunk_content(content, args.chunk_size)
-                for chunk_idx, chunk in enumerate(chunks):
+            if num_workers <= 1 or len(pending_files) <= 1:
+                # Sequential path — original behavior
+                for filepath, content in pending_files:
                     if _interrupted:
                         break
 
-                    findings = analyze_file(
-                        client, chunk, filepath, host_name, args.model,
-                        kb_context=kb_context,
-                    )
-                    all_raw_findings.extend(findings)
-                    file_findings.extend(findings)
+                    progress.start_file(filepath)
 
-                progress.add_findings(file_findings)
-                progress.finish_file(filepath, len(file_findings))
+                    kb_context = ""
+                    if kb:
+                        kb_context = _get_kb_context(kb, content, filepath)
 
-                # Save checkpoint after each file completes
-                if use_checkpoint and not _interrupted:
-                    processed_files.add(file_key)
-                    _save_checkpoint(ckpt_path, all_raw_findings, all_skipped,
-                                     hosts, processed_files, args)
-                    progress.set_checkpoint_status("saved")
+                    file_findings = []
+                    chunks = chunk_content(content, args.chunk_size)
+                    for chunk in chunks:
+                        if _interrupted:
+                            break
+                        findings = analyze_file(
+                            client, chunk, filepath, host_name, args.model,
+                            kb_context=kb_context,
+                        )
+                        all_raw_findings.extend(findings)
+                        file_findings.extend(findings)
+
+                    progress.add_findings(file_findings)
+                    progress.finish_file(filepath, len(file_findings))
+
+                    if use_checkpoint and not _interrupted:
+                        processed_files.add(f"{host_name}/{filepath}")
+                        _save_checkpoint(ckpt_path, all_raw_findings, all_skipped,
+                                         hosts, processed_files, args)
+                        progress.set_checkpoint_status("saved")
+            else:
+                # Parallel path — multiple workers analyze files concurrently
+                def _analyze_one_file(filepath, content):
+                    """Analyze a single file and return its findings."""
+                    kb_context = ""
+                    if kb:
+                        kb_context = _get_kb_context(kb, content, filepath)
+
+                    file_findings = []
+                    chunks = chunk_content(content, args.chunk_size)
+                    for chunk in chunks:
+                        if _interrupted:
+                            break
+                        findings = analyze_file(
+                            client, chunk, filepath, host_name, args.model,
+                            kb_context=kb_context,
+                        )
+                        file_findings.extend(findings)
+                    return filepath, file_findings
+
+                # Mark all pending files as started
+                for filepath, _ in pending_files:
+                    progress.start_file(filepath)
+
+                with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                    future_to_file = {
+                        executor.submit(_analyze_one_file, fp, content): fp
+                        for fp, content in pending_files
+                    }
+
+                    for future in as_completed(future_to_file):
+                        if _interrupted:
+                            break
+
+                        filepath, file_findings = future.result()
+                        all_raw_findings.extend(file_findings)
+
+                        progress.add_findings(file_findings)
+                        progress.finish_file(filepath, len(file_findings))
+
+                        if use_checkpoint and not _interrupted:
+                            processed_files.add(f"{host_name}/{filepath}")
+                            _save_checkpoint(ckpt_path, all_raw_findings, all_skipped,
+                                             hosts, processed_files, args)
+                            progress.set_checkpoint_status("saved")
 
         _generate_report(all_raw_findings, hosts, all_skipped, args, client,
                          partial=_interrupted, ckpt_path=ckpt_path, progress=progress)
