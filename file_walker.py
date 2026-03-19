@@ -52,9 +52,14 @@ def read_text_file(filepath):
         return None
 
 
-def walk_evidence(folder):
+def walk_evidence(folder, include_ext=None, exclude_ext=None):
     """
     Walk an evidence folder recursively and yield (relative_path, content) tuples.
+
+    Args:
+        folder: Path to the evidence folder.
+        include_ext: If set, only include files with these extensions (e.g. {'.py', '.sh', '.txt'}).
+        exclude_ext: If set, skip files with these extensions.
 
     Returns:
         list of (relative_path, content) tuples
@@ -69,6 +74,17 @@ def walk_evidence(folder):
         for filename in sorted(files):
             filepath = os.path.join(root, filename)
             relpath = os.path.relpath(filepath, folder)
+            ext = os.path.splitext(filename)[1].lower()
+
+            # Extension filtering
+            if include_ext and ext not in include_ext:
+                # Also include files with no extension when include_ext is set
+                if ext != '' or '' not in include_ext:
+                    skipped.append(f"{relpath} (excluded by filter)")
+                    continue
+            if exclude_ext and ext in exclude_ext:
+                skipped.append(f"{relpath} (excluded by filter)")
+                continue
 
             # Check file size
             try:
