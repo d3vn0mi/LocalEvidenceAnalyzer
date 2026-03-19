@@ -103,6 +103,26 @@ python analyzer.py analyze /evidence/host1 --model lea-security --kb
 python analyzer.py /evidence/host1 --verbose
 ```
 
+### Auto-Save Checkpoint
+
+Analysis progress is **automatically saved to disk** after each file is processed. If the process is killed, the PC shuts down, or an error occurs, no work is lost.
+
+```bash
+# On next run with the same evidence folders, you'll be prompted:
+Checkpoint found: 42 findings from 15 files.
+  Saved: 2026-03-19T14:30:00
+  [r] Resume from checkpoint
+  [s] Start fresh (discard checkpoint)
+
+# Or resume automatically without prompting:
+python analyzer.py analyze /evidence/host1 --resume
+
+# Disable checkpointing:
+python analyzer.py analyze /evidence/host1 --no-checkpoint
+```
+
+The checkpoint file is automatically deleted after a report is successfully generated.
+
 ### Graceful Interruption
 
 Press **Ctrl+C** during analysis to get a prompt:
@@ -113,6 +133,8 @@ Interrupted! What would you like to do?
   [q] Quit without generating a report
 Choice [g/q]:
 ```
+
+Even after interruption, the checkpoint preserves all findings collected so far — you can resume later with `--resume`.
 
 ### CLI Options
 
@@ -127,6 +149,8 @@ Choice [g/q]:
 | `--kb` | off | Enable knowledge base RAG enrichment |
 | `--kb-dir` | `./knowledge_base` | Custom knowledge base directory |
 | `--verbose, -v` | off | Show analysis progress |
+| `--no-checkpoint` | off | Disable auto-save checkpoint |
+| `--resume` | off | Resume from checkpoint without prompting |
 
 ### Subcommands
 
