@@ -146,6 +146,7 @@ HTML_TEMPLATE = Template("""\
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+{{ meta_refresh }}
 <title>Security Assessment Report</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 960px; margin: 0 auto; padding: 20px; color: #333; line-height: 1.6; }
@@ -170,6 +171,7 @@ HTML_TEMPLATE = Template("""\
 </head>
 <body>
 <h1>Security Assessment Report</h1>
+{{ progress_banner }}
 <p><strong>Date:</strong> {{ report_date }}<br>
 <strong>Hosts analyzed:</strong> {{ hosts_str }}<br>
 <strong>Total findings:</strong> {{ total }} ({{ count_summary }})</p>
@@ -238,4 +240,76 @@ def render_html(findings, hosts, skipped_files=None, report_date=None):
         findings=findings,
         skipped_files=skipped_files or [],
         colors=SEVERITY_COLORS,
+        meta_refresh="",
+        progress_banner="",
+    )
+
+
+# Scroll-preserving script for live auto-refresh
+_SCROLL_SCRIPT = """\
+<script>
+window.addEventListener('beforeunload', function() {
+    sessionStorage.setItem('leaScrollY', window.scrollY);
+});
+window.addEventListener('load', function() {
+    var y = sessionStorage.getItem('leaScrollY');
+    if (y) window.scrollTo(0, parseInt(y));
+});
+</script>"""
+
+
+def render_live_html(raw_findings, hosts, files_done, files_total,
+                     skipped_files=None, is_complete=False, report_date=None):
+    """Render a live-updating HTML report from raw (unconsolidated) findings.
+
+    When is_complete is False, includes a meta-refresh tag and progress banner.
+    """
+    if report_date is None:
+        report_date = date.today().isoformat()
+
+    findings = findings_from_dicts(raw_findings)
+    findings = sort_findings(findings)
+    counts = severity_summary(findings)
+    total = len(findings)
+    hosts_str = ", ".join(hosts) if hosts else "—"
+
+    count_parts = []
+    for sev in ["Critical", "High", "Medium", "Low", "Info"]:
+        if counts[sev] > 0:
+            count_parts.append(f"{counts[sev]} {sev}")
+
+    if is_complete:
+        meta_refresh = ""
+        progress_banner = (
+            '<div style="background:#c8e6c9;padding:12px 16px;border-radius:6px;'
+            'margin:0 0 16px 0;font-size:0.95em;">'
+            f'Analysis complete &mdash; {files_done} files analyzed, '
+            f'{total} raw findings (pre-consolidation).</div>'
+        )
+    else:
+        meta_refresh = (
+            '<meta http-equiv="refresh" content="5">\n'
+            + _SCROLL_SCRIPT
+        )
+        progress_banner = (
+            '<div style="background:#fff3e0;padding:12px 16px;border-radius:6px;'
+            'margin:0 0 16px 0;font-size:0.95em;">'
+            f'<strong>Analysis in progress&hellip;</strong> '
+            f'{files_done}/{files_total} files analyzed, '
+            f'{total} raw findings so far. '
+            '<em>This page auto-refreshes every 5 seconds.</em></div>'
+        )
+
+    return HTML_TEMPLATE.render(
+        report_date=report_date,
+        hosts_str=hosts_str,
+        total=total,
+        count_summary=", ".join(count_parts),
+        counts=counts,
+        severity_order=["Critical", "High", "Medium", "Low", "Info"],
+        findings=findings,
+        skipped_files=skipped_files or [],
+        colors=SEVERITY_COLORS,
+        meta_refresh=meta_refresh,
+        progress_banner=progress_banner,
     )
