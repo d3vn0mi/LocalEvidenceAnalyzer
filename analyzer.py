@@ -20,6 +20,7 @@ from llm_client import (
     consolidate_findings,
     validate_connection,
 )
+from progress import AnalysisProgress, QuietProgress
 from report import findings_from_dicts, render_html, render_markdown
 
 CUSTOM_MODEL_NAME = "lea-security"
@@ -274,7 +275,7 @@ def _get_kb_context(kb, content, filepath):
 
 
 def _generate_report(all_raw_findings, hosts, all_skipped, args, client,
-                     partial=False, ckpt_path=None):
+                     partial=False, ckpt_path=None, progress=None):
     """Consolidate findings and render the final report."""
     if partial:
         print(f"\nGenerating partial report with {len(all_raw_findings)} finding(s) collected so far...",
@@ -282,16 +283,16 @@ def _generate_report(all_raw_findings, hosts, all_skipped, args, client,
 
     # Phase 2: Consolidation
     if all_raw_findings:
-        if args.verbose:
-            print("Consolidating and deduplicating findings...")
+        if progress:
+            progress.start_phase2()
         # Restore default signal handling during consolidation so a second
         # Ctrl+C during this phase aborts cleanly
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         consolidated = consolidate_findings(
             client, all_raw_findings, args.model, args.chunk_size
         )
-        if args.verbose:
-            print(f"Consolidated to {len(consolidated)} findings")
+        if progress:
+            progress.finish_phase2(len(consolidated))
     else:
         consolidated = []
 
@@ -304,11 +305,16 @@ def _generate_report(all_raw_findings, hosts, all_skipped, args, client,
     else:
         report = render_markdown(findings, hosts, all_skipped)
 
+    # Stop live display before writing output
+    if progress:
+        progress.print_final_summary(findings, output_path=args.output)
+
     # Output
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(report)
-        print(f"Report saved to {args.output}")
+        if not args.verbose:
+            print(f"Report saved to {args.output}")
     else:
         print(report)
 
@@ -347,19 +353,13 @@ def run_analysis(args):
         if kb.is_available:
             if not kb._loaded:
                 kb._load_index()
-            if args.verbose:
-                print(f"Knowledge base loaded: {len(kb.chunks)} chunks")
         else:
             print("Warning: Knowledge base not found. Run 'python analyzer.py build-kb' first.", file=sys.stderr)
             print("Continuing without knowledge base enrichment.", file=sys.stderr)
             kb = None
 
     # Connect to Ollama
-    if args.verbose:
-        print(f"Connecting to Ollama at {args.ollama_host}...")
     client = validate_connection(args.ollama_host, args.model)
-    if args.verbose:
-        print(f"Using model: {args.model}")
 
     # Install Ctrl+C handler for graceful interruption
     signal.signal(signal.SIGINT, _handle_interrupt)
@@ -405,81 +405,91 @@ def run_analysis(args):
             else:
                 _remove_checkpoint(ckpt_path)
 
-    for folder in args.folders:
-        if _interrupted:
-            break
+    # Initialize progress display (use rich when --verbose or output goes to file)
+    use_rich = args.verbose or args.output
+    if use_rich:
+        progress = AnalysisProgress()
+    else:
+        progress = QuietProgress()
 
-        host_name = os.path.basename(os.path.abspath(folder))
-        if host_name not in hosts:
-            hosts.append(host_name)
+    progress.set_config(
+        model=args.model,
+        kb_enabled=kb is not None,
+        kb_chunks=len(kb.chunks) if kb else 0,
+    )
+    if use_checkpoint:
+        progress.set_checkpoint_status("enabled")
+    if processed_files:
+        # Preload severity counts from resumed findings
+        progress.add_findings(all_raw_findings)
 
-        if args.verbose:
-            print(f"\n--- Analyzing host: {host_name} ({folder}) ---")
+    progress.start()
 
-        files, skipped = walk_evidence(folder)
-        all_skipped.extend(
-            f"{host_name}/{s}" for s in skipped
-            if f"{host_name}/{s}" not in all_skipped
-        )
-
-        if not files:
-            print(f"Warning: No readable text files in {folder}", file=sys.stderr)
-            continue
-
-        if args.verbose:
-            print(f"Found {len(files)} text files ({len(skipped)} skipped)")
-
-        for i, (filepath, content) in enumerate(files, 1):
+    try:
+        for folder in args.folders:
             if _interrupted:
                 break
 
-            # Skip files already processed in a resumed checkpoint
-            file_key = f"{host_name}/{filepath}"
-            if file_key in processed_files:
-                if args.verbose:
-                    print(f"  [{i}/{len(files)}] Skipping {filepath} (already in checkpoint)")
+            host_name = os.path.basename(os.path.abspath(folder))
+            if host_name not in hosts:
+                hosts.append(host_name)
+
+            files, skipped = walk_evidence(folder)
+            all_skipped.extend(
+                f"{host_name}/{s}" for s in skipped
+                if f"{host_name}/{s}" not in all_skipped
+            )
+
+            if not files:
+                print(f"Warning: No readable text files in {folder}", file=sys.stderr)
                 continue
 
-            if args.verbose:
-                print(f"  [{i}/{len(files)}] Analyzing {filepath}...")
+            progress.start_host(host_name, len(files), len(skipped))
 
-            # Get KB context if available
-            kb_context = ""
-            if kb:
-                kb_context = _get_kb_context(kb, content, filepath)
-                if args.verbose and kb_context:
-                    print(f"    Knowledge base context injected")
-
-            chunks = chunk_content(content, args.chunk_size)
-            for chunk_idx, chunk in enumerate(chunks):
+            for i, (filepath, content) in enumerate(files, 1):
                 if _interrupted:
                     break
 
-                if args.verbose and len(chunks) > 1:
-                    print(f"    Chunk {chunk_idx + 1}/{len(chunks)}")
+                # Skip files already processed in a resumed checkpoint
+                file_key = f"{host_name}/{filepath}"
+                if file_key in processed_files:
+                    progress.skip_file(filepath)
+                    continue
 
-                findings = analyze_file(
-                    client, chunk, filepath, host_name, args.model,
-                    kb_context=kb_context,
-                )
-                all_raw_findings.extend(findings)
+                progress.start_file(filepath)
 
-                if args.verbose and findings:
-                    print(f"    Found {len(findings)} finding(s)")
+                # Get KB context if available
+                kb_context = ""
+                if kb:
+                    kb_context = _get_kb_context(kb, content, filepath)
 
-            # Save checkpoint after each file completes
-            if use_checkpoint and not _interrupted:
-                processed_files.add(file_key)
-                _save_checkpoint(ckpt_path, all_raw_findings, all_skipped,
-                                 hosts, processed_files, args)
-                if args.verbose:
-                    print(f"    Checkpoint saved ({len(all_raw_findings)} findings)")
+                file_findings = []
+                chunks = chunk_content(content, args.chunk_size)
+                for chunk_idx, chunk in enumerate(chunks):
+                    if _interrupted:
+                        break
 
-    if args.verbose and not _interrupted:
-        print(f"\n--- Phase 1 complete: {len(all_raw_findings)} raw findings ---")
+                    findings = analyze_file(
+                        client, chunk, filepath, host_name, args.model,
+                        kb_context=kb_context,
+                    )
+                    all_raw_findings.extend(findings)
+                    file_findings.extend(findings)
 
-    _generate_report(all_raw_findings, hosts, all_skipped, args, client,
-                     partial=_interrupted, ckpt_path=ckpt_path)
+                progress.add_findings(file_findings)
+                progress.finish_file(filepath, len(file_findings))
+
+                # Save checkpoint after each file completes
+                if use_checkpoint and not _interrupted:
+                    processed_files.add(file_key)
+                    _save_checkpoint(ckpt_path, all_raw_findings, all_skipped,
+                                     hosts, processed_files, args)
+                    progress.set_checkpoint_status("saved")
+
+        _generate_report(all_raw_findings, hosts, all_skipped, args, client,
+                         partial=_interrupted, ckpt_path=ckpt_path, progress=progress)
+    finally:
+        progress.stop()
 
 
 def main():
