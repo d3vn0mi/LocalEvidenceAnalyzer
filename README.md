@@ -121,6 +121,12 @@ python analyzer.py analyze /evidence/host1 --model lea-security --kb
 # Only analyze specific file types
 python analyzer.py analyze /evidence/host1 --include-ext .conf .txt .sh .py
 
+# Only analyze specific filenames across all hosts
+python analyzer.py analyze /evidence/host1 /evidence/host2 --include-name sudoers sshd_config
+
+# Glob patterns work too
+python analyzer.py analyze /evidence/* --include-name "*.conf" "authorized_keys"
+
 # Skip certain file types
 python analyzer.py analyze /evidence/host1 --exclude-ext .log .bak .tmp
 
@@ -219,6 +225,8 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 | `--kb-dir` | `./knowledge_base` | Custom knowledge base directory |
 | `--include-ext` | all text files | Only analyze these extensions (e.g. `.py .sh .conf`) |
 | `--exclude-ext` | none | Skip files with these extensions (e.g. `.log .bak`) |
+| `--include-name` | none | Only analyze files matching these names/glob patterns (e.g. `sudoers sshd_config '*.conf'`) |
+| `--exclude-name` | none | Skip files matching these names/glob patterns |
 | `--live` | none | Write a live-updating HTML report to FILE (auto-refreshes in browser) |
 | `--verbose, -v` | off | Show rich progress UI |
 | `--workers, -w` | `1` | Number of parallel file analysis workers (see [Performance Tuning](#performance-tuning)) |

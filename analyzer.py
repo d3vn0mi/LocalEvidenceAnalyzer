@@ -233,6 +233,18 @@ def _add_analyze_args(parser):
         help="Skip files with these extensions (e.g. .log .bak .tmp)",
     )
     parser.add_argument(
+        "--include-name",
+        nargs="+",
+        metavar="PATTERN",
+        help="Only analyze files matching these names/patterns (e.g. sudoers sshd_config '*.conf')",
+    )
+    parser.add_argument(
+        "--exclude-name",
+        nargs="+",
+        metavar="PATTERN",
+        help="Skip files matching these names/patterns (e.g. '*.log' '*.bak')",
+    )
+    parser.add_argument(
         "--no-checkpoint",
         action="store_true",
         default=False,
@@ -598,7 +610,9 @@ def run_analysis(args):
                 hosts.append(host_name)
 
             files, skipped = walk_evidence(folder, include_ext=include_ext,
-                                              exclude_ext=exclude_ext)
+                                              exclude_ext=exclude_ext,
+                                              include_name=args.include_name,
+                                              exclude_name=args.exclude_name)
             all_skipped.extend(
                 f"{host_name}/{s}" for s in skipped
                 if f"{host_name}/{s}" not in all_skipped

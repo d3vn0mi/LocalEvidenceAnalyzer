@@ -1,5 +1,6 @@
 """Recursive directory walker with binary file detection."""
 
+import fnmatch
 import os
 import logging
 
@@ -52,7 +53,16 @@ def read_text_file(filepath):
         return None
 
 
-def walk_evidence(folder, include_ext=None, exclude_ext=None):
+def _matches_any_pattern(filename, patterns):
+    """Check if filename matches any of the given glob patterns."""
+    for pattern in patterns:
+        if fnmatch.fnmatch(filename, pattern):
+            return True
+    return False
+
+
+def walk_evidence(folder, include_ext=None, exclude_ext=None,
+                  include_name=None, exclude_name=None):
     """
     Walk an evidence folder recursively and yield (relative_path, content) tuples.
 
@@ -60,6 +70,11 @@ def walk_evidence(folder, include_ext=None, exclude_ext=None):
         folder: Path to the evidence folder.
         include_ext: If set, only include files with these extensions (e.g. {'.py', '.sh', '.txt'}).
         exclude_ext: If set, skip files with these extensions.
+        include_name: If set, only include files matching these glob patterns (e.g. ['sudoers', '*.conf']).
+        exclude_name: If set, skip files matching these glob patterns.
+
+    When both include_name and include_ext are specified, a file passes if it
+    matches either filter (OR logic).
 
     Returns:
         list of (relative_path, content) tuples
@@ -76,12 +91,29 @@ def walk_evidence(folder, include_ext=None, exclude_ext=None):
             relpath = os.path.relpath(filepath, folder)
             ext = os.path.splitext(filename)[1].lower()
 
-            # Extension filtering
-            if include_ext and ext not in include_ext:
-                # Also include files with no extension when include_ext is set
-                if ext != '' or '' not in include_ext:
+            # Exclude by name pattern (always checked first)
+            if exclude_name and _matches_any_pattern(filename, exclude_name):
+                skipped.append(f"{relpath} (excluded by name filter)")
+                continue
+
+            # Include filtering: name patterns and/or extension
+            if include_name and include_ext:
+                # OR logic: pass if name matches OR extension matches
+                name_ok = _matches_any_pattern(filename, include_name)
+                ext_ok = ext in include_ext or (ext == '' and '' in include_ext)
+                if not name_ok and not ext_ok:
                     skipped.append(f"{relpath} (excluded by filter)")
                     continue
+            elif include_name:
+                if not _matches_any_pattern(filename, include_name):
+                    skipped.append(f"{relpath} (excluded by name filter)")
+                    continue
+            elif include_ext:
+                if ext not in include_ext:
+                    if ext != '' or '' not in include_ext:
+                        skipped.append(f"{relpath} (excluded by filter)")
+                        continue
+
             if exclude_ext and ext in exclude_ext:
                 skipped.append(f"{relpath} (excluded by filter)")
                 continue
