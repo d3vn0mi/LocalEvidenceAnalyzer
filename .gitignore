@@ -1,4 +1,8 @@
 __pycache__/
 .kb_index.json
+.lea_checkpoint.json
+.lea_checkpoint.json.tmp
+*.checkpoint.json
+*.checkpoint.json.tmp
 test_evidence/
 .venv/

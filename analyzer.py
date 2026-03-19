@@ -2,11 +2,13 @@
 """LocalEvidenceAnalyzer - Security evidence analysis using local LLMs."""
 
 import argparse
+import json
 import logging
 import os
 import signal
 import subprocess
 import sys
+from datetime import datetime
 
 from file_walker import walk_evidence
 from knowledge_base import KnowledgeBase
@@ -51,6 +53,59 @@ def _handle_interrupt(signum, frame):
     else:
         print("Exiting.", file=sys.stderr)
         sys.exit(130)
+
+
+def _checkpoint_path(args):
+    """Derive the checkpoint file path from the output flag or use a default."""
+    if args.output:
+        return args.output + ".checkpoint.json"
+    return ".lea_checkpoint.json"
+
+
+def _save_checkpoint(path, raw_findings, skipped, hosts, processed, args):
+    """Atomically save analysis progress to a checkpoint file."""
+    data = {
+        "version": 1,
+        "saved_at": datetime.now().isoformat(),
+        "model": args.model,
+        "folders": [os.path.abspath(f) for f in args.folders],
+        "hosts": hosts,
+        "processed_files": sorted(processed),
+        "skipped_files": skipped,
+        "raw_findings": raw_findings,
+    }
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)  # atomic on POSIX
+
+
+def _load_checkpoint(path, args):
+    """Load a checkpoint file if it exists and matches the current run config."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if data.get("version") != 1:
+        return None
+    # Verify the checkpoint matches the current folders
+    current_folders = sorted(os.path.abspath(f) for f in args.folders)
+    saved_folders = sorted(data.get("folders", []))
+    if current_folders != saved_folders:
+        return None
+    return data
+
+
+def _remove_checkpoint(path):
+    """Remove checkpoint file and its temp file after successful completion."""
+    for p in (path, path + ".tmp"):
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
 
 def parse_args():
@@ -147,6 +202,18 @@ def _add_analyze_args(parser):
         action="store_true",
         help="Enable verbose output",
     )
+    parser.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        default=False,
+        help="Disable auto-save checkpoint (progress will be lost on crash)",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Resume from a previous checkpoint without prompting",
+    )
 
 
 def build_model(ollama_host):
@@ -206,7 +273,8 @@ def _get_kb_context(kb, content, filepath):
     return "\n".join(context_parts)
 
 
-def _generate_report(all_raw_findings, hosts, all_skipped, args, client, partial=False):
+def _generate_report(all_raw_findings, hosts, all_skipped, args, client,
+                     partial=False, ckpt_path=None):
     """Consolidate findings and render the final report."""
     if partial:
         print(f"\nGenerating partial report with {len(all_raw_findings)} finding(s) collected so far...",
@@ -243,6 +311,10 @@ def _generate_report(all_raw_findings, hosts, all_skipped, args, client, partial
         print(f"Report saved to {args.output}")
     else:
         print(report)
+
+    # Clean up checkpoint after successful report generation
+    if ckpt_path:
+        _remove_checkpoint(ckpt_path)
 
 
 def run_analysis(args):
@@ -292,23 +364,63 @@ def run_analysis(args):
     # Install Ctrl+C handler for graceful interruption
     signal.signal(signal.SIGINT, _handle_interrupt)
 
+    # Checkpoint setup
+    use_checkpoint = not args.no_checkpoint
+    ckpt_path = _checkpoint_path(args) if use_checkpoint else None
+    processed_files = set()
+
     # Phase 1: Per-file analysis
     all_raw_findings = []
     all_skipped = []
     hosts = []
+
+    # Check for existing checkpoint to resume from
+    if use_checkpoint:
+        ckpt_data = _load_checkpoint(ckpt_path, args)
+        if ckpt_data:
+            n_findings = len(ckpt_data.get("raw_findings", []))
+            n_files = len(ckpt_data.get("processed_files", []))
+            resume = False
+            if args.resume:
+                resume = True
+            else:
+                print(f"\nCheckpoint found: {n_findings} findings from {n_files} files.",
+                      file=sys.stderr)
+                print(f"  Saved: {ckpt_data.get('saved_at', 'unknown')}", file=sys.stderr)
+                print("  [r] Resume from checkpoint", file=sys.stderr)
+                print("  [s] Start fresh (discard checkpoint)", file=sys.stderr)
+                try:
+                    choice = input("Choice [r/s]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    choice = "s"
+                resume = choice == "r"
+
+            if resume:
+                all_raw_findings = ckpt_data.get("raw_findings", [])
+                all_skipped = ckpt_data.get("skipped_files", [])
+                hosts = ckpt_data.get("hosts", [])
+                processed_files = set(ckpt_data.get("processed_files", []))
+                print(f"Resuming: {n_findings} findings, {n_files} files already done.",
+                      file=sys.stderr)
+            else:
+                _remove_checkpoint(ckpt_path)
 
     for folder in args.folders:
         if _interrupted:
             break
 
         host_name = os.path.basename(os.path.abspath(folder))
-        hosts.append(host_name)
+        if host_name not in hosts:
+            hosts.append(host_name)
 
         if args.verbose:
             print(f"\n--- Analyzing host: {host_name} ({folder}) ---")
 
         files, skipped = walk_evidence(folder)
-        all_skipped.extend(f"{host_name}/{s}" for s in skipped)
+        all_skipped.extend(
+            f"{host_name}/{s}" for s in skipped
+            if f"{host_name}/{s}" not in all_skipped
+        )
 
         if not files:
             print(f"Warning: No readable text files in {folder}", file=sys.stderr)
@@ -320,6 +432,13 @@ def run_analysis(args):
         for i, (filepath, content) in enumerate(files, 1):
             if _interrupted:
                 break
+
+            # Skip files already processed in a resumed checkpoint
+            file_key = f"{host_name}/{filepath}"
+            if file_key in processed_files:
+                if args.verbose:
+                    print(f"  [{i}/{len(files)}] Skipping {filepath} (already in checkpoint)")
+                continue
 
             if args.verbose:
                 print(f"  [{i}/{len(files)}] Analyzing {filepath}...")
@@ -348,10 +467,19 @@ def run_analysis(args):
                 if args.verbose and findings:
                     print(f"    Found {len(findings)} finding(s)")
 
+            # Save checkpoint after each file completes
+            if use_checkpoint and not _interrupted:
+                processed_files.add(file_key)
+                _save_checkpoint(ckpt_path, all_raw_findings, all_skipped,
+                                 hosts, processed_files, args)
+                if args.verbose:
+                    print(f"    Checkpoint saved ({len(all_raw_findings)} findings)")
+
     if args.verbose and not _interrupted:
         print(f"\n--- Phase 1 complete: {len(all_raw_findings)} raw findings ---")
 
-    _generate_report(all_raw_findings, hosts, all_skipped, args, client, partial=_interrupted)
+    _generate_report(all_raw_findings, hosts, all_skipped, args, client,
+                     partial=_interrupted, ckpt_path=ckpt_path)
 
 
 def main():
