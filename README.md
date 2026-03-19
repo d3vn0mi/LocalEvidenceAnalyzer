@@ -83,10 +83,16 @@ python analyzer.py analyze /evidence/host1 --verbose
 # For best results, build the custom security model first (one-time)
 python analyzer.py build-model
 
+# Or build with a different base model + embedded KB (one-time)
+python analyzer.py build-model --base-model qwen2.5:32b --with-kb
+
 # Build the knowledge base index (re-run after adding reference docs)
 python analyzer.py build-kb
 
-# Analyze with custom model + knowledge base
+# Analyze with custom model (KB already embedded if built with --with-kb)
+python analyzer.py analyze /evidence/host1 --model lea-security --verbose
+
+# Or use runtime KB injection instead
 python analyzer.py analyze /evidence/host1 --model lea-security --kb --verbose
 ```
 
@@ -215,7 +221,7 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 | Command | Description |
 |---------|-------------|
 | `analyze` | Analyze evidence folders *(default when omitted)* |
-| `build-model` | Build the custom `lea-security` Ollama model from Modelfile |
+| `build-model` | Build the custom `lea-security` Ollama model (supports `--base-model` and `--with-kb`) |
 | `build-kb` | Build or rebuild the knowledge base index |
 
 ## How It Works
@@ -244,7 +250,7 @@ Each finding includes:
 
 ## Custom Security Model
 
-The included `Modelfile` creates a security-tuned version of llama3.1:8b with:
+The included `Modelfile` creates a security-tuned Ollama model with:
 
 - Detailed security analyst system prompt covering CIS, STIG, NIST, OWASP frameworks
 - Few-shot examples of real findings (SSH, nmap, passwd analysis)
@@ -252,9 +258,29 @@ The included `Modelfile` creates a security-tuned version of llama3.1:8b with:
 - 128K context window
 
 ```bash
+# Build with default base model (llama3.1:8b)
 python analyzer.py build-model
+
+# Build with a different base model (e.g. Qwen)
+python analyzer.py build-model --base-model qwen2.5:32b
+
+# Build with KB baked into the model's system prompt
+python analyzer.py build-model --base-model qwen2.5:32b --with-kb
+
+# Use the built model (no --kb flag needed if KB was embedded)
 python analyzer.py analyze /evidence/host1 --model lea-security
 ```
+
+### build-model Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--base-model` | `llama3.1:8b` | Base Ollama model to build from (e.g. `qwen2.5:32b`, `mistral-small:24b`) |
+| `--with-kb` | off | Embed all knowledge base documents into the model's system prompt |
+| `--kb-dir` | `./knowledge_base` | Custom knowledge base directory (used with `--with-kb`) |
+| `--ollama-host` | `http://localhost:11434` | Ollama API URL |
+
+When `--with-kb` is used, the entire knowledge base is injected into the model's system prompt at build time. This means the model always has access to reference material without needing `--kb` at runtime. The trade-off is a larger model context on every request — for smaller models (8b), runtime `--kb` may be more efficient since it only injects relevant chunks.
 
 ## Knowledge Base (RAG)
 

@@ -138,6 +138,22 @@ def parse_args():
         default="http://localhost:11434",
         help="Ollama API URL (default: http://localhost:11434)",
     )
+    build_parser.add_argument(
+        "--base-model",
+        default=None,
+        help="Base Ollama model to use instead of llama3.1:8b (e.g. qwen2.5:32b)",
+    )
+    build_parser.add_argument(
+        "--with-kb",
+        action="store_true",
+        default=False,
+        help="Embed knowledge base content into the model's system prompt",
+    )
+    build_parser.add_argument(
+        "--kb-dir",
+        default=None,
+        help="Knowledge base directory (default: ./knowledge_base)",
+    )
 
     # Build/rebuild knowledge base index
     kb_parser = subparsers.add_parser(
@@ -229,32 +245,113 @@ def _add_analyze_args(parser):
     )
 
 
-def build_model(ollama_host):
-    """Build the custom security model from the Modelfile."""
+def build_model(ollama_host, base_model=None, with_kb=False, kb_dir=None):
+    """Build the custom security model from the Modelfile.
+
+    Args:
+        ollama_host: Ollama API URL.
+        base_model: Override the base model (e.g. 'qwen2.5:32b').
+        with_kb: If True, embed knowledge base content into the system prompt.
+        kb_dir: Custom knowledge base directory.
+    """
     modelfile_path = os.path.join(os.path.dirname(__file__) or ".", "Modelfile")
 
     if not os.path.exists(modelfile_path):
         print(f"Error: Modelfile not found at {modelfile_path}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Building custom model '{CUSTOM_MODEL_NAME}' from {modelfile_path}...")
-    print("This requires 'llama3.1:8b' to be already pulled.")
+    # Read the original Modelfile
+    with open(modelfile_path, 'r') as f:
+        modelfile_content = f.read()
+
+    # Swap the base model if requested
+    actual_base = base_model or "llama3.1:8b"
+    if base_model:
+        modelfile_content = modelfile_content.replace(
+            "FROM llama3.1:8b", f"FROM {base_model}", 1
+        )
+        print(f"Using base model: {base_model}")
+
+    # Embed KB content into the system prompt if requested
+    if with_kb:
+        kb = KnowledgeBase(kb_dir=kb_dir) if kb_dir else KnowledgeBase()
+        kb_content = _load_kb_for_embedding(kb)
+        if kb_content:
+            # Insert KB reference material before the closing triple-quotes of SYSTEM
+            modelfile_content = modelfile_content.replace(
+                '\n"""',
+                f'\n\nEMBEDDED SECURITY KNOWLEDGE BASE:\n'
+                f'Use the following reference material to improve your analysis.\n'
+                f'---\n{kb_content}\n---\n"""',
+                1,  # only replace the last triple-quote closing SYSTEM
+            )
+            print(f"Embedded knowledge base into model system prompt")
+        else:
+            print("Warning: No KB documents found, building without embedded KB.", file=sys.stderr)
+
+    # Write a temporary Modelfile with modifications
+    if base_model or with_kb:
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.Modelfile', delete=False)
+        tmp.write(modelfile_content)
+        tmp.close()
+        build_path = tmp.name
+    else:
+        build_path = modelfile_path
+
+    print(f"Building custom model '{CUSTOM_MODEL_NAME}'...")
+    print(f"This requires '{actual_base}' to be already pulled.")
     print()
 
     try:
         result = subprocess.run(
-            ["ollama", "create", CUSTOM_MODEL_NAME, "-f", modelfile_path],
+            ["ollama", "create", CUSTOM_MODEL_NAME, "-f", build_path],
             capture_output=False,
         )
         if result.returncode == 0:
             print(f"\nModel '{CUSTOM_MODEL_NAME}' built successfully!")
             print(f"Use it with: python analyzer.py --model {CUSTOM_MODEL_NAME} /path/to/evidence")
+            if with_kb:
+                print("KB is embedded — no need for --kb flag at analysis time.")
         else:
-            print(f"\nError building model. Make sure Ollama is running and llama3.1:8b is pulled.", file=sys.stderr)
+            print(f"\nError building model. Make sure Ollama is running and '{actual_base}' is pulled.", file=sys.stderr)
             sys.exit(1)
     except FileNotFoundError:
         print("Error: 'ollama' command not found. Is Ollama installed?", file=sys.stderr)
         sys.exit(1)
+    finally:
+        # Clean up temp file
+        if build_path != modelfile_path:
+            os.unlink(build_path)
+
+
+def _load_kb_for_embedding(kb):
+    """Load all KB documents and return their concatenated content for embedding.
+
+    Summarizes each document with a header for clarity inside the system prompt.
+    """
+    if not os.path.isdir(kb.kb_dir):
+        return ""
+
+    parts = []
+    for root, _dirs, files in os.walk(kb.kb_dir):
+        for filename in sorted(files):
+            if filename.startswith('.'):
+                continue
+            filepath = os.path.join(root, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if not content:
+                continue
+            # Use filename (without extension) as a section header
+            section_name = os.path.splitext(filename)[0].replace('_', ' ').title()
+            parts.append(f"### {section_name}\n{content}")
+            print(f"  Embedded: {filename}")
+
+    return "\n\n".join(parts)
 
 
 def build_kb(kb_dir=None):
@@ -517,7 +614,12 @@ def main():
     args = parse_args()
 
     if args.command == "build-model":
-        build_model(args.ollama_host)
+        build_model(
+            args.ollama_host,
+            base_model=args.base_model,
+            with_kb=args.with_kb,
+            kb_dir=getattr(args, 'kb_dir', None),
+        )
     elif args.command == "build-kb":
         build_kb(getattr(args, 'kb_dir', None))
     else:
