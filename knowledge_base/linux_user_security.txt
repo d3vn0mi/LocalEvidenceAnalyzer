@@ -1,4 +1,6 @@
 LINUX USER AND AUTHENTICATION SECURITY
+# Framework: CIS Benchmark Linux (All Distros), NIST SP 800-63B
+# Scope: User account, authentication, and PAM security with distro-specific remediation
 
 == /etc/passwd Analysis ==
 
@@ -44,6 +46,7 @@ sudoers analysis:
 - Wildcards in command specs: often exploitable for privilege escalation
 
 == PAM Configuration ==
+CIS: 5.4.x
 
 Key security modules:
 - pam_faillock / pam_tally2: account lockout after failed attempts
@@ -57,3 +60,53 @@ Password quality (pam_pwquality):
 - minlen >= 14 characters (NIST SP 800-63B)
 - dcredit, ucredit, lcredit, ocredit for complexity
 - reject_username, enforce_for_root
+
+PAM configuration paths (distro-specific):
+  RHEL 8+: Managed by authselect
+    authselect current                     # Check active profile
+    authselect select sssd with-faillock   # Apply profile
+    /etc/authselect/custom/               # Custom profiles
+    /etc/security/faillock.conf            # Faillock settings
+  Ubuntu/Debian: Managed by pam-auth-update
+    pam-auth-update --enable pwquality     # Enable module
+    /etc/pam.d/common-auth                 # Auth stack
+    /etc/pam.d/common-password             # Password stack
+    /etc/pam.d/common-account              # Account stack
+    /etc/security/pwquality.conf           # Password quality settings
+
+Remediation — account lockout:
+  # RHEL 8+ (authselect):
+  authselect select sssd with-faillock --force
+  # /etc/security/faillock.conf:
+  deny = 5
+  unlock_time = 900
+  fail_interval = 900
+
+  # Ubuntu/Debian (pam_faillock, 22.04+/Debian 12+):
+  # /etc/pam.d/common-auth — add before pam_unix:
+  auth required pam_faillock.so preauth silent audit deny=5 unlock_time=900
+  auth [default=die] pam_faillock.so authfail audit deny=5 unlock_time=900
+
+  # Older Ubuntu/Debian (pam_tally2):
+  # /etc/pam.d/common-auth:
+  auth required pam_tally2.so deny=5 unlock_time=900 onerr=fail
+
+Remediation — password hashing:
+  # RHEL: authselect sets sha512 by default with sssd profile
+  # Ubuntu/Debian: /etc/pam.d/common-password:
+  password [success=1 default=ignore] pam_unix.so obscure yescrypt
+  # Or for sha512: pam_unix.so obscure sha512 rounds=65536
+
+== SSSD Configuration ==
+
+SSSD (/etc/sssd/sssd.conf) security checks:
+- File permissions must be 0600 (CRITICAL if world-readable — contains bind credentials)
+- ldap_uri should use ldaps:// or ldap:// with ldap_id_use_start_tls = True
+- ldap_tls_reqcert should be "demand" (not "never" or "allow")
+- ldap_tls_cacert should point to valid CA certificate
+- ldap_default_bind_dn credentials exposed in config: MEDIUM (consider keytab)
+
+Remediation:
+  chmod 600 /etc/sssd/sssd.conf
+  chown root:root /etc/sssd/sssd.conf
+  # Use Kerberos keytab instead of bind password where possible

@@ -1,18 +1,32 @@
 SYSTEM HARDENING CHECKLIST
+# Framework: CIS Benchmark Linux (All Distros), NIST SP 800-123
+# Scope: Cross-distro system hardening with distro-specific remediation
 
 == Kernel and OS Security ==
 
-sysctl settings (/etc/sysctl.conf):
+sysctl settings (/etc/sysctl.conf or /etc/sysctl.d/*.conf):
+CIS: 3.3.1-3.3.9
 - net.ipv4.ip_forward = 0 (unless router/gateway): MEDIUM if enabled unnecessarily
 - net.ipv4.conf.all.accept_redirects = 0: MEDIUM if enabled
+- net.ipv4.conf.default.accept_redirects = 0: MEDIUM if enabled
 - net.ipv4.conf.all.send_redirects = 0: MEDIUM if enabled
+- net.ipv4.conf.default.send_redirects = 0: MEDIUM if enabled
 - net.ipv4.conf.all.accept_source_route = 0: MEDIUM if enabled
 - net.ipv4.conf.all.log_martians = 1: LOW if disabled (audit gap)
 - net.ipv4.icmp_echo_ignore_broadcasts = 1: LOW (smurf protection)
 - net.ipv4.tcp_syncookies = 1: MEDIUM if disabled (SYN flood)
 - kernel.randomize_va_space = 2: HIGH if 0 (ASLR disabled)
-- kernel.exec-shield = 1: MEDIUM if disabled (older kernels)
+- kernel.exec-shield = 1: MEDIUM if disabled (older kernels, RHEL 6)
 - fs.suid_dumpable = 0: MEDIUM if enabled (core dumps may contain secrets)
+- kernel.yama.ptrace_scope = 1: MEDIUM if 0 (allows process tracing)
+- net.ipv6.conf.all.accept_redirects = 0: MEDIUM if enabled
+
+Remediation (distro-specific):
+  # Create /etc/sysctl.d/99-security.conf with all settings above
+  # RHEL/CentOS: sysctl --system (loads all /etc/sysctl.d/*.conf)
+  # Ubuntu/Debian: sysctl --system (same command, different default paths)
+  # Note: /etc/sysctl.d/*.conf overrides /etc/sysctl.conf on all distros
+  # Verify: sysctl -a | grep <parameter>
 
 == File System Security ==
 
@@ -45,6 +59,7 @@ Mount options:
 - Missing noexec on tmp: MEDIUM
 
 == Service Management ==
+CIS: 2.1.x, 2.2.x
 
 Unnecessary services (should be disabled):
 - avahi-daemon (unless needed for mDNS)
@@ -56,13 +71,41 @@ Unnecessary services (should be disabled):
 - rsh/rlogin (CRITICAL if running)
 - xinetd services (review each)
 
+Remediation (distro-specific):
+  # List enabled services:
+  systemctl list-unit-files --state=enabled
+
+  # RHEL/CentOS — disable and mask:
+  systemctl disable --now avahi-daemon.service
+  systemctl mask rpcbind.service
+  # Remove packages:
+  dnf remove telnet-server rsh-server      # RHEL 8/9
+  yum remove telnet-server rsh-server      # RHEL 7
+
+  # Ubuntu/Debian — disable and remove:
+  systemctl disable --now avahi-daemon.service
+  apt purge telnetd xinetd inetutils-inetd
+  # Check for legacy inetd:
+  dpkg -l xinetd inetutils-inetd
+
 Service hardening:
 - Services should run as non-root dedicated users
 - Use systemd sandboxing (PrivateTmp, ProtectSystem, NoNewPrivileges)
 - Limit capabilities with CapabilityBoundingSet
 - Use seccomp filters where possible
 
+Remediation — add systemd hardening override:
+  systemctl edit <service-name>
+  # Add:
+  [Service]
+  PrivateTmp=true
+  ProtectSystem=strict
+  ProtectHome=true
+  NoNewPrivileges=true
+  CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
 == Logging and Auditing ==
+CIS: 4.1.x, 4.2.x
 
 auditd:
 - Should be installed and running
@@ -74,13 +117,31 @@ auditd:
   - Log all privilege escalation (execve with euid=0)
   - Log failed authentication attempts
 
-Log files:
-- /var/log/auth.log (or /var/log/secure): authentication events
-- /var/log/syslog: general system events
-- /var/log/kern.log: kernel events
+Remediation — install and configure auditd:
+  # RHEL: dnf install audit audit-libs    (usually pre-installed)
+  # Ubuntu/Debian: apt install auditd audispd-plugins
+  systemctl enable --now auditd
+  # Add key rules to /etc/audit/rules.d/audit.rules:
+  -w /etc/passwd -p wa -k identity
+  -w /etc/shadow -p wa -k identity
+  -w /etc/sudoers -p wa -k sudoers
+  -w /etc/sudoers.d/ -p wa -k sudoers
+  -w /root/.ssh/ -p wa -k rootkeys
+  -a always,exit -F arch=b64 -S execve -F euid=0 -F auid>=1000 -k rootcmd
+  # Reload: augenrules --load
+
+Log files (distro-specific paths):
+- RHEL/CentOS: /var/log/secure (auth), /var/log/messages (system), /var/log/audit/audit.log
+- Ubuntu/Debian: /var/log/auth.log (auth), /var/log/syslog (system), /var/log/kern.log
+- All distros: journalctl (systemd journal)
 - Missing or empty critical logs: MEDIUM (may indicate tampering)
 - Logs not rotated: LOW (disk space risk)
 - No remote log forwarding: LOW-MEDIUM (no backup if compromised)
+
+Remediation — enable remote syslog forwarding:
+  # /etc/rsyslog.conf or /etc/rsyslog.d/50-remote.conf:
+  *.* @@syslog.example.com:514   # TCP
+  # Restart: systemctl restart rsyslog
 
 == Cron Security ==
 

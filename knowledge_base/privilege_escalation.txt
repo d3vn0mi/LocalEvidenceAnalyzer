@@ -1,0 +1,393 @@
+# Privilege Escalation Vectors and Forensic Indicators
+# Framework: GTFOBins, MITRE ATT&CK T1548, T1068, T1134, CIS Benchmarks
+# Scope: Linux privilege escalation misconfigurations and forensic detection
+
+## SUID/SGID BINARY ABUSE
+
+### Issue: Dangerous SUID binaries found on system
+Severity: CRITICAL
+CVSS: 8.8 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+CIS: 6.1.13, 6.1.14
+Affected: All Linux distros
+
+What to look for:
+  # Find all SUID binaries:
+  find / -perm -4000 -type f 2>/dev/null
+  # Find all SGID binaries:
+  find / -perm -2000 -type f 2>/dev/null
+
+  # DANGEROUS SUID binaries (GTFOBins — immediate root shell):
+  /usr/bin/nmap          # nmap --interactive, then !sh
+  /usr/bin/vim           # vim -c ':!/bin/bash'
+  /usr/bin/vi            # :!/bin/bash
+  /usr/bin/find          # find . -exec /bin/bash -p \;
+  /usr/bin/python        # python -c 'import os; os.execl("/bin/sh","sh","-p")'
+  /usr/bin/python3       # python3 -c 'import os; os.setuid(0); os.system("/bin/bash")'
+  /usr/bin/perl          # perl -e 'exec "/bin/bash";'
+  /usr/bin/ruby          # ruby -e 'exec "/bin/bash"'
+  /usr/bin/bash          # bash -p
+  /usr/bin/env           # env /bin/bash -p
+  /usr/bin/awk           # awk 'BEGIN {system("/bin/bash")}'
+  /usr/bin/less          # less /etc/passwd, then !/bin/bash
+  /usr/bin/more          # more /etc/passwd, then !/bin/bash
+  /usr/bin/man           # man man, then !/bin/bash
+  /usr/bin/ftp           # ftp, then !/bin/bash
+  /usr/bin/socat         # socat stdin exec:/bin/bash
+  /usr/bin/zip           # zip /tmp/x.zip /etc/passwd -T -TT 'sh #'
+  /usr/bin/tar           # tar cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=/bin/bash
+  /usr/bin/gcc           # gcc -wrapper /bin/bash,-p -
+  /usr/bin/gdb           # gdb -q -nx -ex 'python import os; os.execl("/bin/bash","bash","-p")' -ex quit
+  /usr/bin/docker        # docker run -v /:/mnt --rm -it alpine chroot /mnt sh
+  /usr/bin/cpulimit      # cpulimit -l 100 -f /bin/bash
+
+  # Custom/non-standard SUID binaries (investigate any unknown):
+  # /opt/*, /usr/local/bin/*, /home/*/bin/*
+
+Why it matters:
+  SUID binaries run as the file owner (usually root). Binaries with shell escape capabilities give any local user instant root access.
+
+Remediation:
+  # Remove SUID bit from dangerous binaries:
+  chmod u-s /usr/bin/find
+  chmod u-s /usr/bin/vim
+  # For required SUID binaries, verify they are expected:
+  # Standard SUID binaries (usually safe):
+  # /usr/bin/passwd, /usr/bin/sudo, /usr/bin/su, /usr/bin/mount, /usr/bin/umount
+  # /usr/bin/chfn, /usr/bin/chsh, /usr/bin/newgrp, /usr/bin/gpasswd
+  # Audit SUID changes:
+  # RHEL: rpm -Va | grep '^..........S'
+  # Debian/Ubuntu: debsums -s | grep FAILED
+
+### Issue: Recently changed SUID bits (forensic indicator)
+Severity: CRITICAL
+CVSS: 9.1 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+Affected: All Linux distros
+
+What to look for:
+  # Find SUID binaries modified in last 7 days:
+  find / -perm -4000 -type f -mtime -7 2>/dev/null
+  # Find SUID binaries modified in last 24 hours:
+  find / -perm -4000 -type f -mtime -1 2>/dev/null
+  # Compare against known-good baseline:
+  # RHEL: rpm -Va | grep '^..........S'
+  # Debian: debsums -c
+
+Why it matters:
+  Newly created or modified SUID binaries are a common persistence mechanism after initial compromise. Attackers copy /bin/bash with SUID bit to maintain root access.
+
+## SUDO MISCONFIGURATIONS
+
+### Issue: NOPASSWD on dangerous commands
+Severity: CRITICAL
+CVSS: 8.8 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+CIS: 5.3.5
+Affected: All Linux distros
+
+What to look for:
+  # /etc/sudoers and /etc/sudoers.d/*:
+  visudo -c    # Syntax check
+  grep -r "NOPASSWD" /etc/sudoers /etc/sudoers.d/
+  # Dangerous NOPASSWD entries:
+  user ALL=(ALL) NOPASSWD: ALL                       # CRITICAL: full root
+  user ALL=(ALL) NOPASSWD: /usr/bin/vi               # Shell escape → root
+  user ALL=(ALL) NOPASSWD: /usr/bin/vim               # :!/bin/bash
+  user ALL=(ALL) NOPASSWD: /usr/bin/less              # !/bin/bash
+  user ALL=(ALL) NOPASSWD: /usr/bin/more              # !/bin/bash
+  user ALL=(ALL) NOPASSWD: /usr/bin/man               # !/bin/bash
+  user ALL=(ALL) NOPASSWD: /usr/bin/ftp               # !/bin/bash
+  user ALL=(ALL) NOPASSWD: /usr/bin/awk               # system() call
+  user ALL=(ALL) NOPASSWD: /usr/bin/find              # -exec /bin/bash
+  user ALL=(ALL) NOPASSWD: /usr/bin/python*           # os.system("/bin/bash")
+  user ALL=(ALL) NOPASSWD: /usr/bin/perl              # exec("/bin/bash")
+  user ALL=(ALL) NOPASSWD: /usr/bin/ruby              # exec("/bin/bash")
+  user ALL=(ALL) NOPASSWD: /usr/bin/env               # env /bin/bash
+  user ALL=(ALL) NOPASSWD: /bin/bash                  # Direct shell
+  user ALL=(ALL) NOPASSWD: /bin/sh                    # Direct shell
+  user ALL=(ALL) NOPASSWD: /usr/bin/docker            # Container escape → root
+  user ALL=(ALL) NOPASSWD: /usr/bin/apt-get           # Pre/post install scripts
+  user ALL=(ALL) NOPASSWD: /usr/bin/pip               # Arbitrary code execution
+  user ALL=(ALL) NOPASSWD: /usr/bin/cp                # Overwrite /etc/shadow
+
+Why it matters:
+  Commands with shell escape capability or arbitrary code execution give the sudoer instant root access without a password.
+
+Remediation:
+  # Remove NOPASSWD for dangerous commands
+  # Use specific, restricted commands instead:
+  # Before:
+  webadmin ALL=(ALL) NOPASSWD: /usr/bin/vi /etc/nginx/*
+  # After:
+  webadmin ALL=(ALL) NOPASSWD: /usr/bin/sudoedit /etc/nginx/nginx.conf
+  # sudoedit does not allow shell escapes
+
+### Issue: Wildcard exploitation in sudo command specs
+Severity: HIGH
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+Affected: All Linux distros
+
+What to look for:
+  # /etc/sudoers:
+  user ALL=(ALL) NOPASSWD: /bin/cp *                    # Exploitable with wildcards
+  user ALL=(ALL) NOPASSWD: /bin/mv *                    # Move /etc/shadow
+  user ALL=(ALL) NOPASSWD: /bin/chmod *                 # chmod 4777 /bin/bash
+  user ALL=(ALL) NOPASSWD: /bin/chown *                 # chown user /etc/shadow
+  user ALL=(ALL) NOPASSWD: /usr/bin/tar *               # --checkpoint-action
+  user ALL=(ALL) NOPASSWD: /usr/bin/rsync *             # -e 'sh -c'
+
+Why it matters:
+  Wildcards in sudo specs allow arbitrary arguments. tar and rsync have options that execute commands. cp/mv can overwrite critical files.
+
+Remediation:
+  # Specify exact file paths, no wildcards:
+  # Before:
+  backup ALL=(ALL) NOPASSWD: /bin/tar *
+  # After:
+  backup ALL=(ALL) NOPASSWD: /bin/tar czf /backups/daily.tar.gz /var/www
+
+### Issue: env_keep preserving LD_PRELOAD or LD_LIBRARY_PATH
+Severity: CRITICAL
+CVSS: 8.8 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+Affected: All Linux distros
+
+What to look for:
+  grep -r "env_keep" /etc/sudoers /etc/sudoers.d/
+  # Dangerous:
+  Defaults env_keep += "LD_PRELOAD"            # Inject shared library
+  Defaults env_keep += "LD_LIBRARY_PATH"       # Hijack library path
+  Defaults env_keep += "PYTHONPATH"            # Python module hijack
+  Defaults env_keep += "PERL5LIB"             # Perl module hijack
+
+Why it matters:
+  LD_PRELOAD with sudo allows a user to inject a malicious shared library that runs as root before any sudo command.
+
+Remediation:
+  # Remove dangerous env_keep entries:
+  # Defaults env_keep should NOT include LD_PRELOAD, LD_LIBRARY_PATH, PYTHONPATH
+  # Verify defaults:
+  sudo -V | grep "Environment variables to preserve"
+
+## LINUX CAPABILITIES
+
+### Issue: Dangerous capabilities set on binaries
+Severity: HIGH
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+Affected: All Linux distros
+
+What to look for:
+  # List all capabilities:
+  getcap -r / 2>/dev/null
+  # Dangerous capabilities:
+  /usr/bin/python3 = cap_setuid+ep          # CRITICAL: set UID to 0 (root)
+  /usr/bin/perl = cap_setuid+ep             # CRITICAL
+  /usr/bin/node = cap_setuid+ep             # CRITICAL
+  cap_setuid                                 # Can change UID → root
+  cap_setgid                                 # Can change GID → root group
+  cap_dac_override                           # Bypass file read/write permissions
+  cap_dac_read_search                        # Bypass file read permissions
+  cap_sys_admin                              # Mount, BPF, many admin ops
+  cap_sys_ptrace                             # Trace/inject into processes
+  cap_net_raw                                # Raw sockets (sniffing)
+  cap_net_bind_service                       # Bind to low ports (LOW risk)
+  cap_fowner                                 # Bypass ownership checks
+
+Why it matters:
+  cap_setuid on an interpreter (python, perl, node) allows any user to become root: python3 -c 'import os; os.setuid(0); os.system("/bin/bash")'
+
+Remediation:
+  # Remove dangerous capabilities:
+  setcap -r /usr/bin/python3
+  # For legitimate use (e.g., ping needs cap_net_raw):
+  # Verify against package defaults:
+  # RHEL: rpm -Va | grep 'P' (permissions changed)
+  # Debian: dpkg --verify | grep capabilities
+
+## CRON AND SCHEDULED TASKS
+
+### Issue: World-writable cron scripts
+Severity: CRITICAL
+CVSS: 8.8 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+CIS: 5.1.2-5.1.7
+Affected: All Linux distros
+
+What to look for:
+  # Check cron directories:
+  ls -la /etc/cron.d/ /etc/cron.daily/ /etc/cron.hourly/ /etc/cron.weekly/ /etc/cron.monthly/
+  # Check scripts referenced in crontab:
+  cat /etc/crontab
+  crontab -l
+  ls -la /var/spool/cron/crontabs/   # Debian/Ubuntu
+  ls -la /var/spool/cron/            # RHEL
+  # World-writable scripts:
+  find /etc/cron* -type f -perm -002 2>/dev/null
+  # Or writable by non-root group:
+  find /etc/cron* -type f ! -user root 2>/dev/null
+
+Why it matters:
+  Cron jobs run as root by default. World-writable cron scripts allow any user to inject commands that execute as root.
+
+Remediation:
+  # Fix permissions on cron directories and scripts:
+  chmod 700 /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly
+  chmod 600 /etc/crontab
+  chown root:root /etc/crontab /etc/cron.d/* /etc/cron.daily/* /etc/cron.hourly/*
+
+### Issue: PATH injection in cron jobs
+Severity: HIGH
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+Affected: All Linux distros
+
+What to look for:
+  # /etc/crontab:
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  # Cron scripts using commands without full path:
+  # /etc/cron.daily/backup.sh:
+  #!/bin/bash
+  tar czf /backups/daily.tar.gz /var/www    # Uses $PATH lookup
+  # If /usr/local/bin is writable, attacker creates /usr/local/bin/tar → root
+
+  # Wildcard injection in tar/rsync cron jobs:
+  # /etc/cron.daily/backup.sh:
+  cd /var/www && tar czf /backups/www.tar.gz *
+  # Attacker creates files: --checkpoint=1 --checkpoint-action=exec=sh shell.sh
+
+Why it matters:
+  Relative command paths in cron scripts allow PATH hijacking. Wildcards in tar/rsync allow argument injection.
+
+Remediation:
+  # Always use absolute paths in cron scripts:
+  /usr/bin/tar czf /backups/daily.tar.gz /var/www
+  # Set restrictive PATH in crontab:
+  PATH=/usr/sbin:/usr/bin:/sbin:/bin
+  # Never use wildcards with tar/rsync — use explicit file lists or --exclude
+
+## KERNEL EXPLOIT INDICATORS
+
+### Issue: Kernel version vulnerable to known privilege escalation CVEs
+Severity: CRITICAL
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+Affected: All Linux distros
+
+What to look for:
+  uname -r
+  cat /proc/version
+
+  # Known critical kernel privilege escalation CVEs:
+  # CVE-2016-5195 (DirtyCow) — Linux < 4.8.3
+  #   Race condition in copy-on-write, local root
+  # CVE-2021-4034 (PwnKit/Polkit) — polkit pkexec
+  #   Memory corruption in pkexec, affects most distros until Jan 2022
+  # CVE-2022-0847 (DirtyPipe) — Linux 5.8-5.16.10
+  #   Pipe buffer overwrite, can modify any file including SUID binaries
+  # CVE-2022-2588 — Linux < 5.19
+  #   cls_route UAF, local privilege escalation
+  # CVE-2023-0386 — Linux OverlayFS
+  #   Privilege escalation via OverlayFS setuid copy-up
+  # CVE-2023-32233 — Linux < 6.4
+  #   Netfilter nf_tables UAF, local root
+  # CVE-2024-1086 — Linux 5.14-6.6
+  #   nf_tables UAF, local root
+
+Why it matters:
+  Unpatched kernels allow any local user to escalate to root. Public exploits exist for all listed CVEs.
+
+Remediation:
+  # Update kernel:
+  # RHEL: dnf update kernel && reboot
+  # Ubuntu: apt update && apt upgrade linux-image-$(uname -r) && reboot
+  # Debian: apt update && apt upgrade linux-image-amd64 && reboot
+  # Check for Livepatch (no-reboot patching):
+  # Ubuntu: canonical-livepatch status
+  # RHEL: kpatch list
+
+## CONTAINER ESCAPE
+
+### Issue: Docker socket mounted or accessible
+Severity: CRITICAL
+CVSS: 9.8 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+Affected: All Linux distros with Docker
+
+What to look for:
+  # Docker socket accessible by non-root:
+  ls -la /var/run/docker.sock
+  # srw-rw---- 1 root docker    # docker group members = root equivalent
+  # srw-rw-rw- 1 root root      # CRITICAL: anyone can access
+
+  # User in docker group:
+  groups <username> | grep docker
+  id <username> | grep docker
+
+  # Inside container — check for mounted socket:
+  ls -la /var/run/docker.sock      # Socket mounted inside container
+  mount | grep docker.sock
+
+  # Privileged container:
+  cat /proc/1/status | grep CapEff
+  # CapEff: 0000003fffffffff = privileged (all caps)
+
+  # Host paths mounted:
+  mount | grep "type ext4\|type xfs\|type btrfs"
+  # /dev/sda1 on /host type ext4 = host root filesystem mounted
+
+Why it matters:
+  Docker socket access allows spawning privileged containers that mount the host filesystem — instant root on the host. Docker group membership is equivalent to root.
+
+Remediation:
+  # Remove users from docker group (use sudo instead):
+  gpasswd -d <username> docker
+  # Restrict Docker socket permissions:
+  chmod 660 /var/run/docker.sock
+  # Use rootless Docker:
+  dockerd-rootless-setuptool.sh install
+  # Never mount Docker socket into containers
+  # Never run containers with --privileged unless absolutely required
+  # Use --security-opt no-new-privileges:
+  docker run --security-opt no-new-privileges ...
+
+## SERVICE-LEVEL PRIVILEGE ESCALATION
+
+### Issue: Writable systemd service unit files
+Severity: HIGH
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+Affected: All Linux distros with systemd
+
+What to look for:
+  # Find writable service files:
+  find /etc/systemd/system/ /usr/lib/systemd/system/ -type f -writable 2>/dev/null
+  # Check permissions:
+  ls -la /etc/systemd/system/*.service
+  # Should be owned by root:root, mode 644
+  # Check ExecStart for writable paths:
+  grep "ExecStart=" /etc/systemd/system/*.service
+  # ExecStart=/opt/app/start.sh    # If /opt/app/start.sh is writable → root
+
+Remediation:
+  # Fix service file permissions:
+  chmod 644 /etc/systemd/system/*.service
+  chown root:root /etc/systemd/system/*.service
+  # Fix ExecStart script permissions:
+  chmod 755 /opt/app/start.sh
+  chown root:root /opt/app/start.sh
+  systemctl daemon-reload
+
+### Issue: Writable paths in LD_LIBRARY_PATH or Python/Node module paths
+Severity: HIGH
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+Affected: All Linux distros
+
+What to look for:
+  # Check environment in service files:
+  grep -r "LD_LIBRARY_PATH\|PYTHONPATH\|NODE_PATH" /etc/systemd/system/ /usr/lib/systemd/system/
+  # Environment="LD_LIBRARY_PATH=/opt/lib"
+  # If /opt/lib is writable → inject malicious shared library
+  # Check world-writable directories in default library paths:
+  find /usr/lib /usr/lib64 /usr/local/lib -type d -perm -002 2>/dev/null
+  # Check Python path:
+  python3 -c "import sys; print('\n'.join(sys.path))"
+  # Writable directories in sys.path allow module injection
+
+Remediation:
+  # Ensure library paths are owned by root and not writable:
+  chmod 755 /opt/lib
+  chown root:root /opt/lib
+  # Remove LD_LIBRARY_PATH from service environments where possible
+  # Use ldconfig instead: echo "/opt/lib" > /etc/ld.so.conf.d/custom.conf && ldconfig

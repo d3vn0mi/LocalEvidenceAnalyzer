@@ -1,0 +1,298 @@
+# Linux Firewall Hardening — iptables, nftables, firewalld, UFW
+# Framework: CIS Benchmark Linux (Section 3.5), NIST SP 800-41
+# Scope: Host-based firewall configuration audit and hardening
+
+## DEFAULT POLICY AUDIT
+
+### Issue: Default INPUT/FORWARD policy set to ACCEPT
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 3.5.3.3.1, 3.5.3.3.2
+Affected: All Linux distros
+
+What to look for:
+  # iptables
+  iptables -L -n | grep "Chain INPUT (policy ACCEPT)"
+  iptables -L -n | grep "Chain FORWARD (policy ACCEPT)"
+
+  # nftables
+  nft list ruleset | grep "policy accept"
+
+  # firewalld
+  firewall-cmd --get-default-zone    # "public" should not allow everything
+
+Why it matters:
+  Default ACCEPT means all inbound traffic is allowed unless explicitly denied. A single missing rule exposes services.
+
+Remediation:
+  # iptables — set default deny
+  iptables -P INPUT DROP
+  iptables -P FORWARD DROP
+  iptables -P OUTPUT ACCEPT
+  iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -A INPUT -i lo -j ACCEPT
+  iptables -A INPUT -p tcp --dport 22 -j ACCEPT  # SSH
+  iptables-save > /etc/iptables/rules.v4          # Debian/Ubuntu
+  service iptables save                            # RHEL
+
+  # nftables — set default deny
+  nft add table inet filter
+  nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
+  nft add chain inet filter forward '{ type filter hook forward priority 0; policy drop; }'
+  nft add rule inet filter input ct state established,related accept
+  nft add rule inet filter input iif lo accept
+  nft add rule inet filter input tcp dport 22 accept
+
+  # firewalld (RHEL)
+  firewall-cmd --set-default-zone=drop
+  firewall-cmd --zone=drop --add-service=ssh --permanent
+  firewall-cmd --reload
+
+  # UFW (Ubuntu/Debian)
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow ssh
+  ufw enable
+
+## IPTABLES RULES ANALYSIS
+
+### Issue: ACCEPT rule from 0.0.0.0/0 (any source)
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 3.5.3.3.3
+Affected: All Linux distros
+
+What to look for:
+  iptables -L -n --line-numbers
+  # Look for rules like:
+  ACCEPT  all  --  0.0.0.0/0  0.0.0.0/0
+  ACCEPT  tcp  --  0.0.0.0/0  0.0.0.0/0  tcp dpt:3306  # MySQL from anywhere
+
+Why it matters:
+  Unrestricted source allows any host on any network to reach the service. Database, admin, and internal services should be source-restricted.
+
+Remediation:
+  # Replace unrestricted rule with source-limited rule
+  # Before:
+  iptables -A INPUT -p tcp --dport 3306 -j ACCEPT
+  # After:
+  iptables -A INPUT -p tcp -s 10.0.1.0/24 --dport 3306 -j ACCEPT
+
+### Issue: Missing stateful connection tracking
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+CIS: 3.5.3.3.4
+Affected: All Linux distros
+
+What to look for:
+  iptables -L -n | grep -v "ctstate\|conntrack\|state"
+  # Rules without -m conntrack --ctstate or -m state --state
+  # Stateless rules cannot distinguish new vs established connections
+
+Remediation:
+  # Add stateful tracking as first rule:
+  iptables -I INPUT 1 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -A INPUT -m conntrack --ctstate INVALID -j DROP
+
+### Issue: Dead rules after DROP/REJECT (unreachable rules)
+Severity: LOW
+CVSS: 3.1 (AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N)
+Affected: All Linux distros
+
+What to look for:
+  iptables -L -n --line-numbers
+  # Rules placed AFTER a blanket DROP rule in the same chain are never matched
+  # Example:
+  5  DROP  all  --  0.0.0.0/0  0.0.0.0/0
+  6  ACCEPT tcp --  10.0.0.0/8  0.0.0.0/0  tcp dpt:443  # DEAD RULE
+
+Why it matters:
+  Indicates misconfiguration or incomplete rule migration. Expected access may be silently blocked.
+
+Remediation:
+  # Reorder rules: specific ACCEPT rules before blanket DROP
+  iptables -D INPUT 6
+  iptables -I INPUT 5 -p tcp -s 10.0.0.0/8 --dport 443 -j ACCEPT
+
+### Issue: No rate limiting on SSH or web services
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L)
+Affected: All Linux distros
+
+What to look for:
+  iptables -L -n | grep -E "dpt:22|dpt:80|dpt:443"
+  # Check if hashlimit or limit module is used
+
+Remediation:
+  # Rate limit SSH connections (max 4 new per minute per source IP)
+  iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW \
+    -m hashlimit --hashlimit-above 4/min --hashlimit-burst 4 \
+    --hashlimit-mode srcip --hashlimit-name ssh_limit -j DROP
+  iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW -j ACCEPT
+
+  # nftables equivalent:
+  nft add rule inet filter input tcp dport 22 ct state new \
+    limit rate over 4/minute burst 4 packets drop
+
+## FIREWALLD (RHEL/CentOS)
+
+### Issue: Dangerous services in public zone
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 3.5.1.4
+Affected: RHEL, CentOS, Fedora
+
+What to look for:
+  firewall-cmd --zone=public --list-all
+  # Check for dangerous services:
+  services: ssh dhcpv6-client mysql postgresql vnc-server nfs mountd
+  # mysql, postgresql, vnc-server, nfs should NOT be in public zone
+
+Why it matters:
+  Public zone services are reachable from untrusted networks. Database and file-sharing services must be in restricted zones.
+
+Remediation:
+  # Remove dangerous services from public zone
+  firewall-cmd --zone=public --remove-service=mysql --permanent
+  firewall-cmd --zone=public --remove-service=postgresql --permanent
+  firewall-cmd --zone=public --remove-service=vnc-server --permanent
+  firewall-cmd --zone=public --remove-service=nfs --permanent
+  # Move to internal/trusted zone with source restrictions:
+  firewall-cmd --zone=internal --add-source=10.0.1.0/24 --permanent
+  firewall-cmd --zone=internal --add-service=mysql --permanent
+  firewall-cmd --reload
+
+### Issue: Runtime vs permanent configuration drift
+Severity: MEDIUM
+CVSS: 4.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:L/A:N)
+Affected: RHEL, CentOS, Fedora
+
+What to look for:
+  # Compare runtime vs permanent:
+  firewall-cmd --list-all                 # Runtime
+  firewall-cmd --list-all --permanent     # Permanent
+  # Differences mean rules were added without --permanent and will be lost on reboot
+
+Remediation:
+  firewall-cmd --runtime-to-permanent
+  # Or re-apply rules with --permanent flag and reload
+
+### Issue: Direct rules bypassing zone-based filtering
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+Affected: RHEL, CentOS, Fedora
+
+What to look for:
+  firewall-cmd --direct --get-all-rules
+  # Direct rules are raw iptables rules that bypass firewalld zones
+
+Remediation:
+  # Migrate direct rules to rich rules or zone-based rules:
+  firewall-cmd --direct --remove-rule <family> <table> <chain> <priority> <args>
+  # Replace with rich rule:
+  firewall-cmd --zone=internal --add-rich-rule='rule family="ipv4" source address="10.0.1.0/24" port port="3306" protocol="tcp" accept' --permanent
+
+## UFW (Ubuntu/Debian)
+
+### Issue: UFW inactive (firewall disabled)
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+CIS: 3.5.1.1
+Affected: Ubuntu, Debian
+
+What to look for:
+  ufw status
+  # Output: "Status: inactive"
+
+Remediation:
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw allow ssh
+  ufw enable
+
+### Issue: UFW IPv6 not configured
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N)
+CIS: 3.5.1.2
+Affected: Ubuntu, Debian
+
+What to look for:
+  grep "IPV6=" /etc/default/ufw
+  # IPV6=no means IPv6 traffic bypasses UFW entirely
+
+Remediation:
+  # /etc/default/ufw
+  # Before:
+  IPV6=no
+  # After:
+  IPV6=yes
+  # Then reload:
+  ufw reload
+
+## NETWORK SEGMENTATION
+
+### Issue: FORWARD chain allows unrestricted traffic between zones
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: All Linux distros (routers/gateways)
+
+What to look for:
+  iptables -L FORWARD -n
+  # Chain FORWARD (policy ACCEPT)  = allows all inter-zone traffic
+  # Or: ACCEPT all -- 0.0.0.0/0 0.0.0.0/0
+
+  # Also check IP forwarding enabled:
+  sysctl net.ipv4.ip_forward    # 1 = forwarding enabled
+  cat /proc/sys/net/ipv4/ip_forward
+
+Remediation:
+  # Set FORWARD default to DROP
+  iptables -P FORWARD DROP
+  # Allow only specific inter-zone traffic:
+  iptables -A FORWARD -s 10.0.1.0/24 -d 10.0.2.0/24 -p tcp --dport 443 -j ACCEPT
+  iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+### Issue: Port forwarding to internal hosts without restriction
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: All Linux distros
+
+What to look for:
+  iptables -t nat -L -n
+  # DNAT rules forwarding external ports to internal IPs:
+  DNAT  tcp  --  0.0.0.0/0  <external-ip>  tcp dpt:8080 to:10.0.1.50:80
+  DNAT  tcp  --  0.0.0.0/0  <external-ip>  tcp dpt:3389 to:10.0.1.100:3389  # RDP!
+
+Remediation:
+  # Add source restrictions to DNAT rules:
+  iptables -t nat -A PREROUTING -p tcp -s 203.0.113.0/24 --dport 8080 -j DNAT --to-destination 10.0.1.50:80
+  # Add corresponding FORWARD rule:
+  iptables -A FORWARD -p tcp -s 203.0.113.0/24 -d 10.0.1.50 --dport 80 -j ACCEPT
+
+## FORENSIC INDICATORS
+
+### Issue: Empty firewall chains (recently flushed rules)
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: All Linux distros
+
+What to look for:
+  iptables -L -n
+  # All chains empty with policy ACCEPT = rules were flushed
+  # Chain INPUT (policy ACCEPT)
+  # target  prot opt source  destination
+  # (no rules)
+
+  # Check for iptables-save file modification:
+  ls -la /etc/iptables/rules.v4        # Debian/Ubuntu
+  ls -la /etc/sysconfig/iptables       # RHEL
+
+Why it matters:
+  Flushed firewall rules during an incident suggest an attacker cleared the firewall to enable unrestricted access or exfiltration.
+
+Remediation:
+  # Restore from backup:
+  iptables-restore < /etc/iptables/rules.v4.bak    # Debian/Ubuntu
+  iptables-restore < /etc/sysconfig/iptables.bak   # RHEL
+  # Investigate: who flushed the rules and when
+  grep -i "iptables\|firewall" /var/log/auth.log /var/log/secure

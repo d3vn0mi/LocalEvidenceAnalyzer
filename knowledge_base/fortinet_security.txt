@@ -1,0 +1,379 @@
+# Fortinet FortiGate / FortiOS Security Configuration
+# Framework: Fortinet Security Best Practices, CIS FortiGate Benchmark
+# Scope: FortiGate firewall configuration audit and hardening
+
+## ADMIN ACCESS HARDENING
+
+### Issue: Default or weak admin password
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+Affected: All FortiOS versions
+
+What to look for:
+  config system admin
+    edit "admin"
+      set password <empty or default>
+  # Default admin account has no password on factory reset
+
+Why it matters:
+  Default admin credentials allow full device takeover. Attackers actively scan for default FortiGate credentials.
+
+Remediation:
+  config system admin
+    edit "admin"
+      set password <strong-password-32-chars>
+      set two-factor fortitoken
+      set trusthost1 10.0.0.0/24
+    next
+  end
+  # Create named admin accounts, disable default "admin" where possible
+
+### Issue: Missing trusted host restriction on admin accounts
+Severity: HIGH
+CVSS: 8.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config system admin
+    edit "<admin-name>"
+      set trusthost1 0.0.0.0 0.0.0.0    # Any source allowed
+      # or no trusthost configured at all
+
+Why it matters:
+  Without trusted hosts, admin login is possible from any IP, including the internet.
+
+Remediation:
+  config system admin
+    edit "admin"
+      set trusthost1 10.0.1.0 255.255.255.0
+      set trusthost2 192.168.1.0 255.255.255.0
+    next
+  end
+
+### Issue: Management access on WAN/untrusted interfaces
+Severity: CRITICAL
+CVSS: 9.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config system interface
+    edit "wan1"
+      set allowaccess ping https ssh http fgfm snmp
+    edit "wan2"
+      set allowaccess https ssh
+
+Why it matters:
+  Exposing HTTPS/SSH/SNMP management on WAN interfaces allows remote brute force and exploitation of FortiOS vulnerabilities.
+
+Remediation:
+  config system interface
+    edit "wan1"
+      set allowaccess ping       # Only PING if needed for monitoring
+      # Remove https ssh http snmp fgfm from WAN interfaces
+    next
+    edit "mgmt"
+      set allowaccess ping https ssh fgfm
+      # Keep management protocols on dedicated management interface only
+    next
+  end
+
+### Issue: Admin lockout not configured
+Severity: MEDIUM
+CVSS: 5.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config system global
+    set admin-lockout-threshold 0    # Disabled
+    # or missing admin-lockout-threshold
+
+Why it matters:
+  Without lockout, attackers can brute force admin passwords indefinitely.
+
+Remediation:
+  config system global
+    set admin-lockout-threshold 3
+    set admin-lockout-duration 300
+  end
+
+### Issue: Idle timeout too long or disabled
+Severity: LOW
+CVSS: 3.3 (AV:L/AC:L/PR:L/UI:N/S:U/C:L/I:N/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config system global
+    set admintimeout 480    # 8 hours, too long
+    # Default is 5 minutes, recommended <=15
+
+Remediation:
+  config system global
+    set admintimeout 15
+  end
+
+## FIREWALL POLICY MISCONFIGURATIONS
+
+### Issue: ANY/ANY/ANY accept rules
+Severity: CRITICAL
+CVSS: 9.1 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config firewall policy
+    edit 1
+      set srcintf "any"
+      set dstintf "any"
+      set srcaddr "all"
+      set dstaddr "all"
+      set service "ALL"
+      set action accept
+      set schedule "always"
+
+Why it matters:
+  Permits all traffic between all zones, completely bypassing firewall segmentation. Often left from initial setup.
+
+Remediation:
+  # Replace with specific policies following least-privilege:
+  config firewall policy
+    edit 1
+      set srcintf "internal"
+      set dstintf "wan1"
+      set srcaddr "LAN_SUBNET"
+      set dstaddr "all"
+      set service "HTTP" "HTTPS" "DNS"
+      set action accept
+      set logtraffic all         # Enable logging
+      set schedule "always"
+    next
+  end
+
+### Issue: Logging disabled on firewall policies
+Severity: MEDIUM
+CVSS: 4.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config firewall policy
+    edit <id>
+      set logtraffic disable     # No logging
+      set logtraffic utm         # Only UTM events, misses allowed/denied
+
+Remediation:
+  config firewall policy
+    edit <id>
+      set logtraffic all
+      set logtraffic-start enable    # Log session start too
+    next
+  end
+
+### Issue: Unused or disabled policies still present
+Severity: LOW
+CVSS: 3.1 (AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:L/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config firewall policy
+    edit <id>
+      set status disable
+      # Or policies with 0 hit count: diagnose firewall policy-hitcount
+
+Remediation:
+  # Review with: diagnose firewall policy-hitcount
+  # Remove unused policies:
+  config firewall policy
+    delete <unused-policy-id>
+  end
+
+## VPN CONFIGURATION
+
+### Issue: IKEv1 used instead of IKEv2
+Severity: MEDIUM
+CVSS: 5.9 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config vpn ipsec phase1-interface
+    edit "vpn-tunnel"
+      set ike-version 1
+
+Why it matters:
+  IKEv1 has known weaknesses including aggressive mode identity exposure and lacks built-in NAT traversal.
+
+Remediation:
+  config vpn ipsec phase1-interface
+    edit "vpn-tunnel"
+      set ike-version 2
+    next
+  end
+
+### Issue: Weak Phase1/Phase2 encryption proposals
+Severity: HIGH
+CVSS: 7.4 (AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config vpn ipsec phase1-interface
+    edit "vpn-tunnel"
+      set proposal des-sha1 3des-md5      # Weak ciphers
+  config vpn ipsec phase2-interface
+    edit "vpn-tunnel-p2"
+      set proposal des-sha1 3des-md5      # Weak ciphers
+
+Why it matters:
+  DES, 3DES, and MD5 are cryptographically broken. Traffic can be decrypted by sophisticated attackers.
+
+Remediation:
+  config vpn ipsec phase1-interface
+    edit "vpn-tunnel"
+      set proposal aes256-sha256 aes256gcm-prfsha384
+      set dhgrp 14 20 21
+    next
+  end
+  config vpn ipsec phase2-interface
+    edit "vpn-tunnel-p2"
+      set proposal aes256-sha256 aes256gcm
+      set dhgrp 14 20 21
+      set pfs enable
+    next
+  end
+
+### Issue: SSL-VPN with weak TLS settings
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config vpn ssl settings
+    set sslv3 enable                      # SSLv3 POODLE
+    set tlsv1-0 enable                    # TLS 1.0 deprecated
+    set tlsv1-1 enable                    # TLS 1.1 deprecated
+    set algorithm low                     # Allows weak ciphers
+
+Remediation:
+  config vpn ssl settings
+    set sslv3 disable
+    set tlsv1-0 disable
+    set tlsv1-1 disable
+    set tlsv1-2 enable
+    set tlsv1-3 enable
+    set algorithm high
+    set banned-cipher SHA1 RC4 DES 3DES NULL
+  end
+
+## LOGGING AND MONITORING
+
+### Issue: SNMP community strings set to public/private
+Severity: HIGH
+CVSS: 7.5 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config system snmp community
+    edit 1
+      set name "public"
+      # or set name "private"
+
+Why it matters:
+  Default SNMP community strings allow unauthorized network reconnaissance and device enumeration.
+
+Remediation:
+  config system snmp community
+    edit 1
+      set name "<complex-random-string>"
+      set query-v1-status disable
+      set query-v2c-status disable
+      set trap-v1-status disable
+      set trap-v2c-status disable
+    next
+  end
+  # Prefer SNMPv3 with authentication and encryption:
+  config system snmp user
+    edit "snmpv3user"
+      set security-level auth-priv
+      set auth-proto sha256
+      set auth-pwd <strong-password>
+      set priv-proto aes256
+      set priv-pwd <strong-password>
+    next
+  end
+
+### Issue: Traffic logging not forwarded to external collector
+Severity: MEDIUM
+CVSS: 4.3 (AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N)
+Affected: All FortiOS versions
+
+What to look for:
+  config log syslogd setting
+    set status disable
+  config log fortianalyzer setting
+    set status disable
+  # Only local disk logging = logs lost if device compromised
+
+Remediation:
+  config log syslogd setting
+    set status enable
+    set server "10.0.1.50"
+    set port 514
+    set facility local7
+    set format default
+  end
+  # Or FortiAnalyzer:
+  config log fortianalyzer setting
+    set status enable
+    set server "10.0.1.51"
+    set upload-option realtime
+    set reliable enable
+  end
+
+## FIRMWARE AND KNOWN VULNERABILITIES
+
+### Issue: FortiOS version with known critical CVEs
+Severity: CRITICAL
+CVSS: 9.8 (AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)
+Affected: Specific FortiOS versions
+
+What to look for:
+  get system status
+  # Check FortiOS version against known CVEs:
+  # CVE-2022-42475 - FortiOS SSL-VPN heap overflow (RCE, actively exploited)
+  #   Affected: 7.2.0-7.2.2, 7.0.0-7.0.8, 6.4.0-6.4.10, 6.2.0-6.2.11
+  # CVE-2023-27997 - FortiOS SSL-VPN pre-auth RCE (Xortigate)
+  #   Affected: 7.2.0-7.2.4, 7.0.0-7.0.11, 6.4.0-6.4.12, 6.2.0-6.2.13
+  # CVE-2024-21762 - FortiOS SSL-VPN out-of-bound write (RCE)
+  #   Affected: 7.4.0-7.4.2, 7.2.0-7.2.6, 7.0.0-7.0.13, 6.4.0-6.4.14
+  # CVE-2024-47575 - FortiManager fgfmsd (FortiJump, actively exploited)
+  #   Affected: FortiManager 7.6.0, 7.4.0-7.4.4, 7.2.0-7.2.7, 7.0.0-7.0.12
+
+Why it matters:
+  These CVEs are actively exploited in the wild by APT groups. Unpatched FortiGate devices are a top initial access vector.
+
+Remediation:
+  # Upgrade to patched FortiOS version immediately
+  # Check current version: get system status
+  # Download firmware from support.fortinet.com
+  execute restore image tftp <firmware-file> <tftp-server>
+  # Or via GUI: System > Firmware > Upload
+  # Minimum safe versions (as of 2024):
+  #   7.4.x: >= 7.4.3
+  #   7.2.x: >= 7.2.7
+  #   7.0.x: >= 7.0.14
+  #   6.4.x: >= 6.4.15 (consider upgrading to 7.x)
+
+## HA CONFIGURATION
+
+### Issue: HA heartbeat not encrypted
+Severity: MEDIUM
+CVSS: 5.3 (AV:A/AC:H/PR:N/UI:N/S:U/C:H/I:N/A:N)
+Affected: All FortiOS HA deployments
+
+What to look for:
+  config system ha
+    set password ""               # Empty HA password
+    # or missing password configuration
+
+Remediation:
+  config system ha
+    set password <strong-password>
+    set hb-interval 2
+    set hb-lost-threshold 6
+  end
