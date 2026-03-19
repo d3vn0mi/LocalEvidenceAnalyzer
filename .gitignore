@@ -6,3 +6,4 @@ __pycache__/
 *.checkpoint.json.tmp
 test_evidence/
 .venv/
+results/
