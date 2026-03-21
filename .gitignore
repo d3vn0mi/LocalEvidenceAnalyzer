@@ -1,7 +1,7 @@
 __pycache__/
 .kb_index.json
-.lea_checkpoint.json
-.lea_checkpoint.json.tmp
+.kagami_checkpoint.json
+.kagami_checkpoint.json.tmp
 *.checkpoint.json
 *.checkpoint.json.tmp
 test_evidence/

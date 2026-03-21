@@ -1,7 +1,10 @@
 <p align="center">
-  <h1 align="center">LocalEvidenceAnalyzer</h1>
+  <h1 align="center">鏡 Kagami</h1>
   <p align="center">
-    <strong>Offline security evidence analysis powered by local LLMs</strong>
+    <strong>Autonomous forensic analysis & configuration auditing powered by local LLMs</strong>
+  </p>
+  <p align="center">
+    <em>by <a href="https://github.com/d3vn0mi">d3vn0mi</a></em>
   </p>
   <p align="center">
     <a href="#features">Features</a> &bull;
@@ -10,6 +13,7 @@
     <a href="#usage">Usage</a> &bull;
     <a href="#knowledge-base-rag">Knowledge Base</a> &bull;
     <a href="#recommended-models">Models</a> &bull;
+    <a href="#roadmap">Roadmap</a> &bull;
     <a href="#license">License</a>
   </p>
   <p align="center">
@@ -21,16 +25,18 @@
 
 ---
 
-A Python CLI tool that analyzes security evidence folders using a local LLM (via [Ollama](https://ollama.ai)) and generates structured security assessment reports with CVSSv3-scored findings. Built for forensics analysts and pentesters. Everything runs locally — your evidence never leaves your machine.
+Kagami (鏡, "mirror") is a Python CLI forensics analyst and configuration auditor that reflects the true security posture of your systems. It analyzes evidence folders using a local LLM (via [Ollama](https://ollama.ai)) and generates structured security assessment reports with CVSSv3-scored findings. Built for forensics analysts, configuration auditors, and pentesters. Everything runs locally — your evidence never leaves your machine.
 
 ## Features
 
-- **Recursive evidence scanning** — configs, logs, scan outputs, text files with file type filtering
+- **Forensic evidence analysis** — configs, logs, scan outputs, text files with file type filtering
+- **Configuration auditing** — CIS, STIG, NIST, OWASP compliance checking via LLM reasoning
 - **Multi-host support** — analyze multiple hosts in a single run
 - **Two-phase LLM analysis** — per-file analysis + cross-file deduplication and consolidation
 - **CVSSv3 scoring** — vector strings and base scores for every finding
-- **Evidence traceability** — each finding references its source file
+- **Evidence traceability** — each finding references its source file and host
 - **Markdown & HTML reports** — professional output ready for clients
+- **Auto-generated results** — each run creates a timestamped `results/` folder with the report and a `command.txt` audit trail
 - **Live HTML preview** — watch findings populate in your browser in real time with `--live`
 - **Rich progress UI** — animated progress bars, severity breakdown, and file-by-file status
 - **Auto-save checkpoint** — progress saved to disk after each file; resume after crashes or power loss
@@ -50,8 +56,8 @@ A Python CLI tool that analyzes security evidence folders using a local LLM (via
 
 ```bash
 # Clone the repository
-git clone https://github.com/d3vn0mi/LocalEvidenceAnalyzer.git
-cd LocalEvidenceAnalyzer
+git clone https://github.com/d3vn0mi/Kagami.git
+cd Kagami
 
 # Create a virtual environment (recommended)
 python3 -m venv .venv
@@ -91,10 +97,10 @@ python analyzer.py build-model --base-model qwen2.5:32b --with-kb
 python analyzer.py build-kb
 
 # Analyze with custom model (KB already embedded if built with --with-kb)
-python analyzer.py analyze /evidence/host1 --model lea-security --verbose
+python analyzer.py analyze /evidence/host1 --model kagami-security --verbose
 
 # Or use runtime KB injection instead
-python analyzer.py analyze /evidence/host1 --model lea-security --kb --verbose
+python analyzer.py analyze /evidence/host1 --model kagami-security --kb --verbose
 ```
 
 ## Usage
@@ -106,7 +112,7 @@ python analyzer.py analyze /path/to/evidence/host1
 # Multiple hosts
 python analyzer.py analyze /evidence/host1 /evidence/host2 /evidence/host3
 
-# Save report to file
+# Save report to a specific path (bypasses auto results directory)
 python analyzer.py analyze /evidence/host1 --output report.md
 
 # Generate HTML report
@@ -116,7 +122,7 @@ python analyzer.py analyze /evidence/host1 --format html --output report.html
 python analyzer.py analyze /evidence/host1 --model qwen2.5:32b
 
 # Use the custom security model with knowledge base
-python analyzer.py analyze /evidence/host1 --model lea-security --kb
+python analyzer.py analyze /evidence/host1 --model kagami-security --kb
 
 # Only analyze specific file types
 python analyzer.py analyze /evidence/host1 --include-ext .conf .txt .sh .py
@@ -140,14 +146,30 @@ python analyzer.py analyze /evidence/host1 --workers 4 --verbose
 python analyzer.py /evidence/host1 --verbose
 ```
 
+### Results Directory
+
+By default, each run creates a timestamped results folder:
+
+```
+results/
+├── 20260319_143022/
+│   ├── report.md          # Generated report
+│   └── command.txt        # Exact command used to produce this report
+├── 20260319_151500/
+│   ├── report.html
+│   └── command.txt
+```
+
+Use `--output` to bypass this and write to a specific path instead.
+
 ### Progress UI
 
 When running with `--verbose` or `--output`, a rich live display shows real-time progress:
 
 ```
-╭─ LocalEvidenceAnalyzer ────────────────────────╮
+╭─ Kagami ───────────────────────────────────────╮
 │ Hosts: webserver01                              │
-│ Model: lea-security                             │
+│ Model: kagami-security                          │
 │ Features: KB (130 chunks) | Checkpoint: saved   │
 ╰─────────────────────────────────────────────────╯
 
@@ -175,7 +197,7 @@ After completion, a styled summary table is displayed:
 │ Total      │    42         │
 └────────────┴───────────────┘
 
-Report saved to: report.md
+Report saved to: results/20260319_143022/report.md
 ```
 
 ### Auto-Save Checkpoint
@@ -217,7 +239,7 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 |--------|---------|-------------|
 | `folders` | *(required)* | One or more evidence folders |
 | `--model` | `llama3.1:8b` | Ollama model name |
-| `--output, -o` | stdout | Save report to file |
+| `--output, -o` | auto (`results/<timestamp>/`) | Save report to specific file (bypasses auto results directory) |
 | `--format, -f` | `markdown` | Output format: `markdown` or `html` |
 | `--ollama-host` | `http://localhost:11434` | Ollama API URL |
 | `--chunk-size` | `50000` | Max chars per LLM chunk |
@@ -238,7 +260,7 @@ Even after interruption, the checkpoint preserves all findings collected so far 
 | Command | Description |
 |---------|-------------|
 | `analyze` | Analyze evidence folders *(default when omitted)* |
-| `build-model` | Build the custom `lea-security` Ollama model (supports `--base-model` and `--with-kb`) |
+| `build-model` | Build the custom `kagami-security` Ollama model (supports `--base-model` and `--with-kb`) |
 | `build-kb` | Build or rebuild the knowledge base index |
 
 ## How It Works
@@ -285,7 +307,7 @@ python analyzer.py build-model --base-model qwen2.5:32b
 python analyzer.py build-model --base-model qwen2.5:32b --with-kb
 
 # Use the built model (no --kb flag needed if KB was embedded)
-python analyzer.py analyze /evidence/host1 --model lea-security
+python analyzer.py analyze /evidence/host1 --model kagami-security
 ```
 
 ### build-model Options
@@ -301,7 +323,7 @@ When `--with-kb` is used, the entire knowledge base is injected into the model's
 
 ## Knowledge Base (RAG)
 
-The tool includes a comprehensive security knowledge base with **13 reference documents** covering forensics, pentesting, and configuration auditing. Uses a lightweight keyword-based retrieval system — no heavy vector DB dependencies.
+Kagami includes a comprehensive security knowledge base with **13 reference documents** covering forensics, pentesting, and configuration auditing. Uses a lightweight keyword-based retrieval system — no heavy vector DB dependencies.
 
 ### Built-in Reference Documents
 
@@ -344,7 +366,7 @@ By default, files are analyzed one at a time. If you have idle CPU/GPU capacity 
 python analyzer.py analyze /evidence/host1 --workers 4 --verbose
 
 # Combine with your custom model
-python analyzer.py analyze /evidence/host1 --model lea-security --workers 4 --verbose
+python analyzer.py analyze /evidence/host1 --model kagami-security --workers 4 --verbose
 ```
 
 ### Ollama Parallel Slots
@@ -375,7 +397,7 @@ export OLLAMA_NUM_PARALLEL=4
 | Model | Size | RAM | Speed | Notes |
 |-------|------|-----|-------|-------|
 | `llama3.1:8b` | 4.9 GB | ~8 GB | Fast | Default — good general performance |
-| `lea-security` | 4.9 GB | ~8 GB | Fast | Custom-tuned with security prompts |
+| `kagami-security` | 4.9 GB | ~8 GB | Fast | Custom-tuned with security prompts |
 | `qwen2.5:14b` | ~9 GB | ~12 GB | Moderate | Better structured JSON output |
 | `qwen2.5:32b` | ~20 GB | ~24 GB | Slower | Best quality — recommended for 32GB+ RAM |
 | `mistral-small:24b` | ~15 GB | ~18 GB | Moderate | Strong reasoning |
@@ -383,7 +405,7 @@ export OLLAMA_NUM_PARALLEL=4
 ## Project Structure
 
 ```
-LocalEvidenceAnalyzer/
+Kagami/
 ├── analyzer.py             # CLI entrypoint + orchestration
 ├── file_walker.py          # Recursive dir walk, binary detection, extension filtering
 ├── llm_client.py           # Ollama wrapper, chunking, JSON parsing
@@ -407,6 +429,7 @@ LocalEvidenceAnalyzer/
 │   ├── linux_ubuntu_debian_hardening.txt
 │   ├── privilege_escalation.txt
 │   └── log_forensics.txt
+├── results/                # Auto-generated reports (gitignored)
 └── LICENSE                 # MIT License
 ```
 
@@ -427,6 +450,20 @@ evidence/
 │   ├── apache_config.conf
 │   └── access.log
 ```
+
+## Roadmap
+
+### Phase 1 — Evidence Folder Analysis (Current)
+Analyze pre-collected evidence folders from forensic acquisitions, configuration exports, or pentest artifacts. This is the current functionality.
+
+### Phase 2 — Autonomous Filesystem Scanning
+Run Kagami directly on a live system to autonomously discover, collect, and audit security-relevant files from the local filesystem. Planned capabilities:
+
+- **Auto-discovery** — scan known security-relevant paths (`/etc/ssh/`, `/etc/sudoers.d/`, `/etc/pam.d/`, systemd units, cron jobs, etc.)
+- **Live system profiling** — detect OS, distro, running services, and tailor the audit scope accordingly
+- **Configuration drift detection** — compare live configs against CIS/STIG baselines
+- **Scheduled audits** — run periodic scans and diff reports over time
+- **Agent mode** — daemonize for continuous compliance monitoring
 
 ## Contributing
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LocalEvidenceAnalyzer - Security evidence analysis using local LLMs."""
+"""Kagami - Forensic analysis and configuration auditing powered by local LLMs."""
 
 import argparse
 import json
@@ -24,7 +24,7 @@ from llm_client import (
 from progress import AnalysisProgress, QuietProgress
 from report import findings_from_dicts, render_html, render_markdown
 
-CUSTOM_MODEL_NAME = "lea-security"
+CUSTOM_MODEL_NAME = "kagami-security"
 
 # Signals the analysis loop to stop and generate a partial report
 _interrupted = False
@@ -61,7 +61,7 @@ def _checkpoint_path(args):
     """Derive the checkpoint file path from the output flag or use a default."""
     if args.output:
         return args.output + ".checkpoint.json"
-    return ".lea_checkpoint.json"
+    return ".kagami_checkpoint.json"
 
 
 def _save_checkpoint(path, raw_findings, skipped, hosts, processed, args):
@@ -180,7 +180,7 @@ def _add_analyze_args(parser):
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help=f"Ollama model to use (default: {DEFAULT_MODEL}). Use 'lea-security' for the custom model.",
+        help=f"Ollama model to use (default: {DEFAULT_MODEL}). Use 'kagami-security' for the custom model.",
     )
     parser.add_argument(
         "--output", "-o",

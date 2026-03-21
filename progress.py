@@ -1,4 +1,4 @@
-"""Rich-based progress display for LocalEvidenceAnalyzer."""
+"""Rich-based progress display for Kagami."""
 
 from rich.console import Console
 from rich.live import Live
@@ -86,7 +86,7 @@ class AnalysisProgress:
 
         header = Panel(
             "\n".join(info_parts) if info_parts else "Starting...",
-            title="[bold white]LocalEvidenceAnalyzer[/]",
+            title="[bold white]Kagami[/]",
             border_style="cyan",
             expand=False,
             width=60,

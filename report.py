@@ -249,10 +249,10 @@ def render_html(findings, hosts, skipped_files=None, report_date=None):
 _SCROLL_SCRIPT = """\
 <script>
 window.addEventListener('beforeunload', function() {
-    sessionStorage.setItem('leaScrollY', window.scrollY);
+    sessionStorage.setItem('kagamiScrollY', window.scrollY);
 });
 window.addEventListener('load', function() {
-    var y = sessionStorage.getItem('leaScrollY');
+    var y = sessionStorage.getItem('kagamiScrollY');
     if (y) window.scrollTo(0, parseInt(y));
 });
 </script>"""

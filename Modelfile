@@ -1,5 +1,5 @@
-# LocalEvidenceAnalyzer custom security model
-# Build with: ollama create lea-security -f Modelfile
+# Kagami custom security model
+# Build with: ollama create kagami-security -f Modelfile
 
 FROM llama3.1:8b
 
